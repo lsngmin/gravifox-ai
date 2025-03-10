@@ -1,9 +1,10 @@
 from tensorflow.keras.applications import Xception
-from tensorflow.keras.layers import GlobalAveragePooling2D, Dense
+from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Dropout
 from tensorflow.keras.models import Model
 import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, TensorBoard
 from tensorflow.keras import mixed_precision
+from tensorflow.python.keras.regularizers import l2
 
 # GPU 초기화 설정 (모든 GPU에 대해 메모리 자동 확장 방식 설정)
 gpus = tf.config.list_physical_devices('GPU')  # GPU 목록 확인
@@ -21,7 +22,8 @@ xception_model = Xception(weights='imagenet', include_top=False, input_shape=(25
 
 x = xception_model.output
 x = GlobalAveragePooling2D()(x)
-x = Dense(1024, activation='relu')(x)
+x = Dense(1024, activation='relu', kernel_regularizer=l2(0.01))(x)
+x = Dropout(0.5)(x)  # 드롭아웃 추가
 x = Dense(2, activation='softmax')(x)  # 예: 2개의 클래스 (fake, real)
 
 model = Model(inputs=xception_model.input, outputs=x)
