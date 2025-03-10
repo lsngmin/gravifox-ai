@@ -2,6 +2,7 @@ from tensorflow.keras.applications import Xception
 from tensorflow.keras.layers import GlobalAveragePooling2D, Dense
 from tensorflow.keras.models import Model
 import tensorflow as tf
+from tensorflow.keras.callbacks import EarlyStopping
 
 # 모델 구성
 xception_model = Xception(weights='imagenet', include_top=False, input_shape=(256, 256, 3))
@@ -49,10 +50,18 @@ def one_hot_encode(image, label):
 train_dataset = train_dataset.map(one_hot_encode)
 validation_dataset = validation_dataset.map(one_hot_encode)
 
+# EarlyStopping 콜백 설정
+early_stopping = EarlyStopping(
+    monitor='val_loss',  # 'val_loss'가 개선되지 않으면 학습을 중지
+    patience=3,          # 3 에폭 동안 개선되지 않으면 중지
+    restore_best_weights=True  # 가장 좋은 모델 가중치를 복원
+)
+
 # 모델 학습
 model.fit(
     train_dataset,
     epochs=10,
     batch_size=batch_size,
-    validation_data=validation_dataset  # 검증 데이터 추가
+    validation_data=validation_dataset,  # 검증 데이터 추가
+    callbacks=[early_stopping]  # EarlyStopping 콜백 추가
 )
