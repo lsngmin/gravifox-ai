@@ -3,7 +3,7 @@ from tensorflow.keras.layers import GlobalAveragePooling2D, Dense
 from tensorflow.keras.models import Model
 import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, TensorBoard
-from tensorflow.keras.mixed_precision import experimental as mixed_precision
+from tensorflow.keras import mixed_precision
 
 # GPU 초기화 설정 (메모리 자동 확장 방식)
 gpus = tf.config.list_physical_devices('GPU')  # GPU 목록 확인
@@ -29,7 +29,7 @@ model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accur
 # 데이터셋 경로 및 파라미터
 train_dir = "Dataset/Train/"
 validation_dir = "Dataset/Validation/"
-batch_size = 32
+batch_size = 16
 img_size = (256, 256)
 
 # 학습 데이터셋 로드
@@ -62,7 +62,7 @@ train_dataset = train_dataset.map(one_hot_encode)
 validation_dataset = validation_dataset.map(one_hot_encode)
 
 # Mixed Precision Training 활성화
-policy = mixed_precision.Policy('mixed_float16')
+policy = mixed_precision.Policy('mixed_float16')  # mixed_float16은 16비트와 32비트 혼합 훈련을 사용
 mixed_precision.set_policy(policy)
 
 # EarlyStopping 콜백 설정
