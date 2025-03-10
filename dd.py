@@ -1,7 +1,7 @@
-import tensorflow as tf
 from tensorflow.keras.applications import Xception
 from tensorflow.keras.layers import GlobalAveragePooling2D, Dense
 from tensorflow.keras.models import Model
+import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, TensorBoard
 from tensorflow.keras import mixed_precision
 
@@ -64,7 +64,7 @@ validation_dataset = validation_dataset.map(one_hot_encode)
 
 # Mixed Precision Training 활성화
 policy = mixed_precision.Policy('mixed_float16')  # mixed_float16은 16비트와 32비트 혼합 훈련을 사용
-mixed_precision.set_policy(policy)
+mixed_precision.set_global_policy(policy)  # set_policy 대신 set_global_policy 사용
 
 # EarlyStopping 콜백 설정
 early_stopping = EarlyStopping(
