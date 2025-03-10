@@ -29,7 +29,7 @@ model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accur
 # 데이터셋 경로 및 파라미터
 train_dir = "Dataset/Train/"
 validation_dir = "Dataset/Validation/"
-batch_size = 16
+batch_size = 32
 img_size = (256, 256)
 
 # 학습 데이터셋 로드
