@@ -1,17 +1,18 @@
+import tensorflow as tf
 from tensorflow.keras.applications import Xception
 from tensorflow.keras.layers import GlobalAveragePooling2D, Dense
 from tensorflow.keras.models import Model
-import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, TensorBoard
 from tensorflow.keras import mixed_precision
 
-# GPU 초기화 설정 (메모리 자동 확장 방식)
+# GPU 초기화 설정 (모든 GPU에 대해 메모리 자동 확장 방식 설정)
 gpus = tf.config.list_physical_devices('GPU')  # GPU 목록 확인
 if gpus:
     try:
-        # 첫 번째 GPU에 대해서 메모리 자동 확장 설정
-        tf.config.experimental.set_memory_growth(gpus[0], True)
-        print("GPU 메모리 자동 확장 설정 완료.")
+        # 모든 GPU에 대해 메모리 자동 확장 설정
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print("모든 GPU에 대해 메모리 자동 확장 설정 완료.")
     except RuntimeError as e:
         print("GPU 메모리 자동 확장 설정 실패:", e)
 
