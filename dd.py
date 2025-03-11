@@ -5,6 +5,8 @@ import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, TensorBoard
 from tensorflow.keras import mixed_precision
 from tensorflow.keras.regularizers import l2
+from tensorflow.keras.optimizer_v2.learning_rate_schedule import CosineDecay
+
 # GPU 초기화 설정 (모든 GPU에 대해 메모리 자동 확장 방식 설정)
 gpus = tf.config.list_physical_devices('GPU')  # GPU 목록 확인
 if gpus:
@@ -25,8 +27,23 @@ x = Dense(1024, activation='relu', kernel_regularizer=l2(0.01))(x)
 x = Dropout(0.5)(x)  # 드롭아웃 추가
 x = Dense(2, activation='softmax')(x)  # 예: 2개의 클래스 (fake, real)
 
+# 초기 학습률, 총 훈련 스텝
+initial_learning_rate = 0.001
+decay_steps = 43750  # 총 훈련 스텝 수에 맞춰 조정
+
+# CosineDecay 학습률 스케줄러 설정
+lr_schedule = CosineDecay(
+    initial_learning_rate=initial_learning_rate,
+    decay_steps=decay_steps,
+    alpha=0.1  # 최소 학습률 (전체 학습률의 10%)
+)
+
+# Adam 옵티마이저에 학습률 스케줄러 설정
+optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
+
+
 model = Model(inputs=xception_model.input, outputs=x)
-model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
 
 # 데이터셋 경로 및 파라미터
 train_dir = "Dataset/Train/"
@@ -70,17 +87,17 @@ mixed_precision.set_global_policy(policy)  # set_policy 대신 set_global_policy
 # EarlyStopping 콜백 설정
 early_stopping = EarlyStopping(
     monitor='val_loss',  # 'val_loss'가 개선되지 않으면 학습을 중지
-    patience=3,          # 3 에폭 동안 개선되지 않으면 중지
+    patience=5,          # 3 에폭 동안 개선되지 않으면 중지
     restore_best_weights=True  # 가장 좋은 모델 가중치를 복원
 )
 
 # 학습률 감소 콜백 설정 (Learning Rate Scheduler)
-lr_scheduler = ReduceLROnPlateau(
-    monitor='val_loss',  # 'val_loss'가 개선되지 않으면 학습률을 낮춤
-    factor=0.2,          # 학습률을 20%로 감소
-    patience=2,          # 2 에폭 동안 개선되지 않으면 학습률을 낮춤
-    verbose=1            # 변경 시 출력
-)
+# lr_scheduler = ReduceLROnPlateau(
+#     monitor='val_loss',  # 'val_loss'가 개선되지 않으면 학습률을 낮춤
+#     factor=0.2,          # 학습률을 20%로 감소
+#     patience=2,          # 2 에폭 동안 개선되지 않으면 학습률을 낮춤
+#     verbose=1            # 변경 시 출력
+# )
 
 # TensorBoard 콜백 설정 (시각화 로그 저장)
 tensorboard_callback = TensorBoard(
@@ -91,8 +108,8 @@ tensorboard_callback = TensorBoard(
 # 모델 학습
 model.fit(
     train_dataset,
-    epochs=10,
+    epochs=20,
     batch_size=batch_size,
     validation_data=validation_dataset,  # 검증 데이터 추가
-    callbacks=[early_stopping, lr_scheduler, tensorboard_callback]  # EarlyStopping, 학습률 조정, TensorBoard 콜백 추가
+    callbacks=[early_stopping, tensorboard_callback]  # EarlyStopping, 학습률 조정, TensorBoard 콜백 추가
 )
