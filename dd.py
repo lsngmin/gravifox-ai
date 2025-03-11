@@ -8,7 +8,6 @@ from tensorflow.keras.regularizers import l2
 from tensorflow.keras.optimizers.schedules import CosineDecay
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
-# GPU 초기화 설정 (모든 GPU에 대해 메모리 자동 확장 방식 설정)
 gpus = tf.config.list_physical_devices('GPU')  # GPU 목록 확인
 if gpus:
     try:
@@ -46,7 +45,6 @@ optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
 model = Model(inputs=xception_model.input, outputs=x)
 model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
 
-# 데이터셋 경로 및 파라미터
 train_dir = "Dataset/Train/"
 validation_dir = "Dataset/Validation/"
 batch_size = 32
@@ -56,58 +54,48 @@ img_size = (256, 256)
 train_dataset = tf.keras.utils.image_dataset_from_directory(
     train_dir,
     shuffle=True,
+    batch_size=batch_size,
+    image_size=img_size
 )
 
 # 검증 데이터셋 로드
 validation_dataset = tf.keras.utils.image_dataset_from_directory(
     validation_dir,
     shuffle=False,  # 검증 데이터는 셔플할 필요 없음
-
+    batch_size=batch_size,
+    image_size=img_size
 )
 
-train_datagen = ImageDataGenerator(
-    rescale=1./255,               # 정규화
-    rotation_range=40,            # 회전
-    width_shift_range=0.2,        # 수평 이동
-    height_shift_range=0.2,       # 수직 이동
-    shear_range=0.2,              # 기울기 변환
-    zoom_range=0.2,               # 확대/축소
-    horizontal_flip=True,         # 수평 반전
-    brightness_range=[0.5, 1.5],  # 밝기 변화
-    fill_mode='nearest'           # 비어있는 공간 채우기
-)
+# 정규화 레이어
+normalization_layer = tf.keras.layers.Rescaling(1./255)
 
-# 검증 데이터는 증강하지 않음 (단지 정규화만)
-val_datagen = ImageDataGenerator(rescale=1./255)
+# 데이터 증강 (학습 데이터에만 적용)
+train_datagen = tf.keras.Sequential([
+    tf.keras.layers.RandomRotation(0.2),    # 회전
+    tf.keras.layers.RandomWidth(0.2),        # 수평 이동
+    tf.keras.layers.RandomHeight(0.2),       # 수직 이동
+    tf.keras.layers.RandomZoom(0.2),         # 확대/축소
+    tf.keras.layers.RandomFlip('horizontal') # 수평 반전
+])
 
-# 학습 및 검증 데이터 생성기
-train_generator = train_datagen.flow_from_directory(
-    train_dataset,                 # 훈련 데이터 디렉토리
-    target_size=(256, 256),      # 입력 이미지 크기
-    batch_size=32,
-    class_mode='binary'          # 이진 분류
-)
+# one-hot 인코딩 함수
+def one_hot_encode(image, label):
+    return normalization_layer(image), tf.one_hot(label, depth=len(class_names))
 
-validation_generator = val_datagen.flow_from_directory(
-    validation_dataset,            # 검증 데이터 디렉토리
-    target_size=(256, 256),
-    batch_size=32,
-    class_mode='binary'
-)
+# 학습 데이터에 증강 및 정규화 적용
+train_dataset = train_dataset.map(lambda x, y: (train_datagen(x), y))  # 증강 먼저
+train_dataset = train_dataset.map(one_hot_encode)  # 그 후 정규화 및 one-hot 인코딩 적용
+
+# 검증 데이터셋은 정규화만 적용
+validation_dataset = validation_dataset.map(lambda x, y: (normalization_layer(x), y))  # 정규화만
+
 
 
 # 클래스 이름 확인
 class_names = train_dataset.class_names
 print("클래스:", class_names)
 
-# 정규화 레이어 및 데이터셋 변환
-normalization_layer = tf.keras.layers.Rescaling(1./255)
 
-def one_hot_encode(image, label):
-    return normalization_layer(image), tf.one_hot(label, depth=len(class_names))
-
-train_dataset = train_dataset.map(one_hot_encode)
-validation_dataset = validation_dataset.map(one_hot_encode)
 
 # Mixed Precision Training 활성화
 policy = mixed_precision.Policy('mixed_float16')  # mixed_float16은 16비트와 32비트 혼합 훈련을 사용
@@ -136,9 +124,9 @@ tensorboard_callback = TensorBoard(
 
 # 모델 학습
 model.fit(
-    train_generator,
+    train_dataset,
     epochs=20,
     batch_size=batch_size,
-    validation_data=validation_generator,  # 검증 데이터 추가
+    validation_data=validation_dataset,  # 검증 데이터 추가
     callbacks=[early_stopping, tensorboard_callback]  # EarlyStopping, 학습률 조정, TensorBoard 콜백 추가
 )
