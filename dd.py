@@ -115,9 +115,9 @@ tensorboard_callback = TensorBoard(
 
 # 모델 학습
 model.fit(
-    train_dataset,
+    train_generator,
     epochs=20,
     batch_size=batch_size,
-    validation_data=validation_dataset,  # 검증 데이터 추가
+    validation_data=validation_generator,  # 검증 데이터 추가
     callbacks=[early_stopping, tensorboard_callback]  # EarlyStopping, 학습률 조정, TensorBoard 콜백 추가
 )
