@@ -5,7 +5,7 @@ import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, TensorBoard
 from tensorflow.keras import mixed_precision
 from tensorflow.keras.regularizers import l2
-from tensorflow.keras.optimizer_v2.learning_rate_schedule import CosineDecay
+from tensorflow.keras.optimizers.schedules import CosineDecay
 
 # GPU 초기화 설정 (모든 GPU에 대해 메모리 자동 확장 방식 설정)
 gpus = tf.config.list_physical_devices('GPU')  # GPU 목록 확인
