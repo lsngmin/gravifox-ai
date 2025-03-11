@@ -25,7 +25,7 @@ x = xception_model.output
 x = GlobalAveragePooling2D()(x)
 x = Dense(1024, activation='relu', kernel_regularizer=l2(0.01))(x)
 x = Dropout(0.5)(x)  # 드롭아웃 추가
-x = Dense(2, activation='softmax')(x)  # 예: 2개의 클래스 (fake, real)
+x = Dense(1, activation='sigmoid')(x)  # 예: 2개의 클래스 (fake, real)
 
 # 초기 학습률, 총 훈련 스텝
 initial_learning_rate = 0.001
