@@ -89,14 +89,6 @@ train_dataset = train_dataset.map(one_hot_encode)  # 그 후 정규화 및 one-h
 # 검증 데이터셋은 정규화만 적용
 validation_dataset = validation_dataset.map(lambda x, y: (normalization_layer(x), y))  # 정규화만
 
-
-
-# 클래스 이름 확인
-class_names = train_dataset.class_names
-print("클래스:", class_names)
-
-
-
 # Mixed Precision Training 활성화
 policy = mixed_precision.Policy('mixed_float16')  # mixed_float16은 16비트와 32비트 혼합 훈련을 사용
 mixed_precision.set_global_policy(policy)  # set_policy 대신 set_global_policy 사용
