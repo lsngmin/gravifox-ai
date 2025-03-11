@@ -43,7 +43,7 @@ optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
 
 
 model = Model(inputs=xception_model.input, outputs=x)
-model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
+model.compile(optimizer=optimizer, loss='binary_crossentropy', metrics=['accuracy'])
 
 train_dir = "Dataset/Train/"
 validation_dir = "Dataset/Validation/"
