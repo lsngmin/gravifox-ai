@@ -51,47 +51,37 @@ batch_size = 32
 img_size = (256, 256)
 
 # 학습 데이터셋 로드
-train_dataset = tf.keras.utils.image_dataset_from_directory(
-    train_dir,
-    shuffle=True,
-    batch_size=batch_size,
-    image_size=img_size
+train_datagen = ImageDataGenerator(
+    rescale=1./255,               # 정규화
+    rotation_range=40,            # 회전
+    width_shift_range=0.2,        # 수평 이동
+    height_shift_range=0.2,       # 수직 이동
+    shear_range=0.2,              # 기울기 변환
+    zoom_range=0.2,               # 확대/축소
+    horizontal_flip=True,         # 수평 반전
+    brightness_range=[0.5, 1.5],  # 밝기 변화
+    fill_mode='nearest'           # 비어있는 공간 채우기
 )
-
-# 검증 데이터셋 로드
-validation_dataset = tf.keras.utils.image_dataset_from_directory(
-    validation_dir,
-    shuffle=False,  # 검증 데이터는 셔플할 필요 없음
-    batch_size=batch_size,
-    image_size=img_size
-)
-
-# 정규화 레이어
-normalization_layer = tf.keras.layers.Rescaling(1./255)
-
-# 데이터 증강 (학습 데이터에만 적용)
-train_datagen = tf.keras.Sequential([
-    tf.keras.layers.RandomRotation(0.2),    # 회전
-    tf.keras.layers.RandomWidth(0.2),        # 수평 이동
-    tf.keras.layers.RandomHeight(0.2),       # 수직 이동
-    tf.keras.layers.RandomZoom(0.2),         # 확대/축소
-    tf.keras.layers.RandomFlip('horizontal') # 수평 반전
-])
-
-# 클래스 이름 확인
-class_names = train_dataset.class_names
-print("클래스:", class_names)
-
-# one-hot 인코딩 함수
-def one_hot_encode(image, label):
-    return normalization_layer(image), tf.one_hot(label, depth=len(class_names))
-
-# 학습 데이터에 증강 및 정규화 적용
-train_dataset = train_dataset.map(lambda x, y: (train_datagen(x), y))  # 증강 먼저
-train_dataset = train_dataset.map(one_hot_encode)  # 그 후 정규화 및 one-hot 인코딩 적용
 
 # 검증 데이터셋은 정규화만 적용
-validation_dataset = validation_dataset.map(lambda x, y: (normalization_layer(x), y))  # 정규화만
+val_datagen = ImageDataGenerator(rescale=1./255)
+
+# 학습 및 검증 데이터 생성기
+train_generator = train_datagen.flow_from_directory(
+    train_dir,                    # 훈련 데이터 디렉토리
+    target_size=(256, 256),       # 입력 이미지 크기
+    batch_size=batch_size,
+    class_mode='binary'           # 이진 분류
+)
+
+validation_generator = val_datagen.flow_from_directory(
+    validation_dir,               # 검증 데이터 디렉토리
+    target_size=(256, 256),
+    batch_size=batch_size,
+    class_mode='binary'
+)
+
+
 
 
 
