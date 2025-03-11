@@ -32,22 +32,6 @@ x = Dense(2, activation='softmax')(x)  # 예: 2개의 클래스 (fake, real)
 initial_learning_rate = 0.001
 decay_steps = 43750  # 총 훈련 스텝 수에 맞춰 조정
 
-train_datagen = ImageDataGenerator(
-    rescale=1./255,               # 정규화
-    rotation_range=40,            # 회전
-    width_shift_range=0.2,        # 수평 이동
-    height_shift_range=0.2,       # 수직 이동
-    shear_range=0.2,              # 기울기 변환
-    zoom_range=0.2,               # 확대/축소
-    horizontal_flip=True,         # 수평 반전
-    brightness_range=[0.5, 1.5],  # 밝기 변화
-    fill_mode='nearest'           # 비어있는 공간 채우기
-)
-
-# 검증 데이터는 증강하지 않음 (단지 정규화만)
-val_datagen = ImageDataGenerator(rescale=1./255)
-
-
 # CosineDecay 학습률 스케줄러 설정
 lr_schedule = CosineDecay(
     initial_learning_rate=initial_learning_rate,
@@ -72,29 +56,41 @@ img_size = (256, 256)
 train_dataset = tf.keras.utils.image_dataset_from_directory(
     train_dir,
     shuffle=True,
-    batch_size=batch_size,
-    image_size=img_size
 )
 
 # 검증 데이터셋 로드
 validation_dataset = tf.keras.utils.image_dataset_from_directory(
     validation_dir,
     shuffle=False,  # 검증 데이터는 셔플할 필요 없음
-    batch_size=batch_size,
-    image_size=img_size
+
 )
+
+train_datagen = ImageDataGenerator(
+    rescale=1./255,               # 정규화
+    rotation_range=40,            # 회전
+    width_shift_range=0.2,        # 수평 이동
+    height_shift_range=0.2,       # 수직 이동
+    shear_range=0.2,              # 기울기 변환
+    zoom_range=0.2,               # 확대/축소
+    horizontal_flip=True,         # 수평 반전
+    brightness_range=[0.5, 1.5],  # 밝기 변화
+    fill_mode='nearest'           # 비어있는 공간 채우기
+)
+
+# 검증 데이터는 증강하지 않음 (단지 정규화만)
+val_datagen = ImageDataGenerator(rescale=1./255)
 
 # 학습 및 검증 데이터 생성기
 train_generator = train_datagen.flow_from_directory(
-    'train_dir',                 # 훈련 데이터 디렉토리
-    target_size=(150, 150),      # 입력 이미지 크기
+    train_dataset,                 # 훈련 데이터 디렉토리
+    target_size=(256, 256),      # 입력 이미지 크기
     batch_size=32,
     class_mode='binary'          # 이진 분류
 )
 
 validation_generator = val_datagen.flow_from_directory(
-    'validation_dir',            # 검증 데이터 디렉토리
-    target_size=(150, 150),
+    validation_dataset,            # 검증 데이터 디렉토리
+    target_size=(256, 256),
     batch_size=32,
     class_mode='binary'
 )
