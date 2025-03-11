@@ -6,6 +6,7 @@ from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, TensorB
 from tensorflow.keras import mixed_precision
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.optimizers.schedules import CosineDecay
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 # GPU 초기화 설정 (모든 GPU에 대해 메모리 자동 확장 방식 설정)
 gpus = tf.config.list_physical_devices('GPU')  # GPU 목록 확인
@@ -30,6 +31,22 @@ x = Dense(2, activation='softmax')(x)  # 예: 2개의 클래스 (fake, real)
 # 초기 학습률, 총 훈련 스텝
 initial_learning_rate = 0.001
 decay_steps = 43750  # 총 훈련 스텝 수에 맞춰 조정
+
+train_datagen = ImageDataGenerator(
+    rescale=1./255,               # 정규화
+    rotation_range=40,            # 회전
+    width_shift_range=0.2,        # 수평 이동
+    height_shift_range=0.2,       # 수직 이동
+    shear_range=0.2,              # 기울기 변환
+    zoom_range=0.2,               # 확대/축소
+    horizontal_flip=True,         # 수평 반전
+    brightness_range=[0.5, 1.5],  # 밝기 변화
+    fill_mode='nearest'           # 비어있는 공간 채우기
+)
+
+# 검증 데이터는 증강하지 않음 (단지 정규화만)
+val_datagen = ImageDataGenerator(rescale=1./255)
+
 
 # CosineDecay 학습률 스케줄러 설정
 lr_schedule = CosineDecay(
@@ -66,6 +83,22 @@ validation_dataset = tf.keras.utils.image_dataset_from_directory(
     batch_size=batch_size,
     image_size=img_size
 )
+
+# 학습 및 검증 데이터 생성기
+train_generator = train_datagen.flow_from_directory(
+    'train_dir',                 # 훈련 데이터 디렉토리
+    target_size=(150, 150),      # 입력 이미지 크기
+    batch_size=32,
+    class_mode='binary'          # 이진 분류
+)
+
+validation_generator = val_datagen.flow_from_directory(
+    'validation_dir',            # 검증 데이터 디렉토리
+    target_size=(150, 150),
+    batch_size=32,
+    class_mode='binary'
+)
+
 
 # 클래스 이름 확인
 class_names = train_dataset.class_names
@@ -107,9 +140,9 @@ tensorboard_callback = TensorBoard(
 
 # 모델 학습
 model.fit(
-    train_dataset,
+    train_generator,
     epochs=20,
     batch_size=batch_size,
-    validation_data=validation_dataset,  # 검증 데이터 추가
+    validation_data=validation_generator,  # 검증 데이터 추가
     callbacks=[early_stopping, tensorboard_callback]  # EarlyStopping, 학습률 조정, TensorBoard 콜백 추가
 )
