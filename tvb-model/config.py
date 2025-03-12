@@ -5,13 +5,13 @@ VALIDATION_DIR = "Dataset/Validation/"
 TEST_DIR = "Dataset/Test/"
 
 # data_loader.py config setting
-BATCH_SIZE = 32
+BATCH_SIZE = 64
 IMG_SIZE = (256, 256)
 EPOCHS = 20
 CLASS_MODE = 'binary'
 
 # data_loader.py Image Aug
-RESCALE = 1. / 255
+RESCALE = 1./255
 ROTATION_RANGE = 20
 WIDTH_SHIFT_RANGE = 0.2
 HEIGHT_SHIFT_RANGE = 0.2
@@ -37,9 +37,9 @@ XCEPTION_MODEL_LOSS = 'binary_crossentropy'
 XCEPTION_MODEL_METRICS = ['accuracy']
 
 # Learning Schedular
-INITIAL_LEARNING_RATE = 0.01
+INITIAL_LEARNING_RATE = 0.001
 DECAY_STEPS = 43750
-ALPHA = 0.01
+ALPHA = 0.1
 
 # EARLY_STOP
 MONITER = 'val_loss'

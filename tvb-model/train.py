@@ -15,10 +15,11 @@ if gpus:
     except RuntimeError as e:
         print("GPU 메모리 자동 확장 설정 실패:", e)
 
+model = build_xception()
+
 policy = mixed_precision.Policy('mixed_float16')
 mixed_precision.set_global_policy(policy)
 
-model = build_xception()
 train, validation = get_data_generators()
 
 model.fit(
