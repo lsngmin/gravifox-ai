@@ -1,10 +1,10 @@
-from dd import train_generator, validation_generator
-from model import build_xception
 import tensorflow as tf
-from data_loader import get_data_generators
 from tensorflow.keras import mixed_precision
-from config import BATCH_SIZE
 from callback import *
+from data_loader import get_data_generators
+from model import build_xception
+from config import *
+
 gpus = tf.config.list_physical_devices('GPU')  # GPU 목록 확인
 if gpus:
     try:
@@ -23,8 +23,8 @@ train, validation = get_data_generators()
 
 model.fit(
     train,
-    epochs=20,
-    batch_size=32,
+    epochs=EPOCHS,
+    batch_size=BATCH_SIZE,
     validation_data=validation,
     callbacks=[es(), tb()]
 )
