@@ -29,4 +29,4 @@ model.fit(
     validation_data=validation,
     callbacks=[es(), tb()]
 )
-model.save("xception_model")
+model.save("xception_model.h5")
