@@ -45,8 +45,8 @@ optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
 model = Model(inputs=xception_model.input, outputs=x)
 model.compile(optimizer=optimizer, loss='binary_crossentropy', metrics=['accuracy'])
 
-train_dir = "tvb-model/Dataset/Train/"
-validation_dir = "tvb-model/Dataset/Validation/"
+train_dir = "Dataset/Train/"
+validation_dir = "Dataset/Validation/"
 batch_size = 32
 img_size = (256, 256)
 
@@ -109,7 +109,7 @@ early_stopping = EarlyStopping(
 
 # TensorBoard 콜백 설정 (시각화 로그 저장)
 tensorboard_callback = TensorBoard(
-    log_dir='./logs',    # 로그 디렉토리 경로
+    log_dir='../logs',    # 로그 디렉토리 경로
     histogram_freq=1     # 히스토그램 주기 설정
 )
 
