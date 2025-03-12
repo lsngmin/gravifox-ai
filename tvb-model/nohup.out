@@ -1,0 +1,43 @@
+2025-03-12 12:46:16.869912: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2025-03-12 12:46:16.883311: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:485] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+2025-03-12 12:46:16.898696: E external/local_xla/xla/stream_executor/cuda/cuda_dnn.cc:8454] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+2025-03-12 12:46:16.903212: E external/local_xla/xla/stream_executor/cuda/cuda_blas.cc:1452] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+2025-03-12 12:46:16.915109: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX512F AVX512_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+2025-03-12 12:46:17.692719: W tensorflow/compiler/tf2tensorrt/utils/py_utils.cc:38] TF-TRT Warning: Could not find TensorRT
+2025-03-12 12:46:18.806923: I tensorflow/core/common_runtime/gpu/gpu_device.cc:2021] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 43585 MB memory:  -> device: 0, name: NVIDIA A40, pci bus id: 0000:31:00.0, compute capability: 8.6
+2025-03-12 12:46:18.808489: I tensorflow/core/common_runtime/gpu/gpu_device.cc:2021] Created device /job:localhost/replica:0/task:0/device:GPU:1 with 43585 MB memory:  -> device: 1, name: NVIDIA A40, pci bus id: 0000:e3:00.0, compute capability: 8.6
+모든 GPU에 대해 메모리 자동 확장 설정 완료.
+Found 140002 images belonging to 2 classes.
+Found 39428 images belonging to 2 classes.
+/home/smin/anaconda3/envs/tvb-ai/lib/python3.9/site-packages/keras/src/trainers/data_adapters/py_dataset_adapter.py:121: UserWarning: Your `PyDataset` class should call `super().__init__(**kwargs)` in its constructor. `**kwargs` can include `workers`, `use_multiprocessing`, `max_queue_size`. Do not pass these arguments to `fit()`, as they will be ignored.
+  self._warn_if_super_not_called()
+Epoch 1/20
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1741751199.076995  117765 service.cc:146] XLA service 0x790c9c0051f0 initialized for platform CUDA (this does not guarantee that XLA will be used). Devices:
+I0000 00:00:1741751199.077084  117765 service.cc:154]   StreamExecutor device (0): NVIDIA A40, Compute Capability 8.6
+I0000 00:00:1741751199.077098  117765 service.cc:154]   StreamExecutor device (1): NVIDIA A40, Compute Capability 8.6
+2025-03-12 12:46:39.579313: I tensorflow/compiler/mlir/tensorflow/utils/dump_mlir_util.cc:268] disabling MLIR crash reproducer, set env var `MLIR_CRASH_REPRODUCER_DIRECTORY` to enable.
+2025-03-12 12:46:42.128887: I external/local_xla/xla/stream_executor/cuda/cuda_dnn.cc:531] Loaded cuDNN version 8902
+2025-03-12 12:46:43.744165: F external/local_xla/xla/service/gpu/gemm_fusion_autotuner.cc:792] Non-OK-status: has_executable.status()
+Status: INTERNAL: ptxas exited with non-zero error code 2, output: : If the error message indicates that a file could not be written, please verify that sufficient filesystem space is provided.Failure occured when compiling fusion gemm_fusion_dot.15696 with config '{block_m:32,block_n:16,block_k:32,split_k:1,num_stages:1,num_warps:4,num_ctas:1}'
+Fused HLO computation:
+%gemm_fusion_dot.15696_computation (parameter_0.2: f32[32,2048], parameter_1.2: f32[32,1024]) -> f32[2048,1024] {
+  %parameter_0.2 = f32[32,2048]{1,0} parameter(0)
+  %constant.1620 = f32[] constant(0.015625), metadata={op_type="Mean" op_name="functional_1/global_average_pooling2d_1/Mean" source_file="/home/smin/anaconda3/envs/tvb-ai/lib/python3.9/site-packages/tensorflow/python/framework/ops.py" source_line=1177}
+  %broadcast.1841 = f32[32,2048]{1,0} broadcast(f32[] %constant.1620), dimensions={}, metadata={op_type="Mean" op_name="functional_1/global_average_pooling2d_1/Mean" source_file="/home/smin/anaconda3/envs/tvb-ai/lib/python3.9/site-packages/tensorflow/python/framework/ops.py" source_line=1177}
+  %multiply.2049 = f32[32,2048]{1,0} multiply(f32[32,2048]{1,0} %parameter_0.2, f32[32,2048]{1,0} %broadcast.1841), metadata={op_type="Mean" op_name="functional_1/global_average_pooling2d_1/Mean" source_file="/home/smin/anaconda3/envs/tvb-ai/lib/python3.9/site-packages/tensorflow/python/framework/ops.py" source_line=1177}
+  %parameter_1.2 = f32[32,1024]{1,0} parameter(1)
+  ROOT %dot.55 = f32[2048,1024]{1,0} dot(f32[32,2048]{1,0} %multiply.2049, f32[32,1024]{1,0} %parameter_1.2), lhs_contracting_dims={0}, rhs_contracting_dims={0}, frontend_attributes={grad_x="false",grad_y="true"}, metadata={op_type="MatMul" op_name="gradient_tape/functional_1/dense_1/MatMul/MatMul_1" source_file="/home/smin/anaconda3/envs/tvb-ai/lib/python3.9/site-packages/tensorflow/python/framework/ops.py" source_line=1177}
+}
+2025-03-12 12:46:43.744354: F external/local_xla/xla/service/gpu/gemm_fusion_autotuner.cc:792] Non-OK-status: has_executable.status()
+Status: INTERNAL: ptxas exited with non-zero error code 2, output: : If the error message indicates that a file could not be written, please verify that sufficient filesystem space is provided.Failure occured when compiling fusion gemm_fusion_dot.15696 with config '{block_m:16,block_n:16,block_k:32,split_k:1,num_stages:3,num_warps:4,num_ctas:1}'
+Fused HLO computation:
+%gemm_fusion_dot.15696_computation (parameter_0.2: f32[32,2048], parameter_1.2: f32[32,1024]) -> f32[2048,1024] {
+  %parameter_0.2 = f32[32,2048]{1,0} parameter(0)
+  %constant.1620 = f32[] constant(0.015625), metadata={op_type="Mean" op_name="functional_1/global_average_pooling2d_1/Mean" source_file="/home/smin/anaconda3/envs/tvb-ai/lib/python3.9/site-packages/tensorflow/python/framework/ops.py" source_line=1177}
+  %broadcast.1841 = f32[32,2048]{1,0} broadcast(f32[] %constant.1620), dimensions={}, metadata={op_type="Mean" op_name="functional_1/global_average_pooling2d_1/Mean" source_file="/home/smin/anaconda3/envs/tvb-ai/lib/python3.9/site-packages/tensorflow/python/framework/ops.py" source_line=1177}
+  %multiply.2049 = f32[32,2048]{1,0} multiply(f32[32,2048]{1,0} %parameter_0.2, f32[32,2048]{1,0} %broadcast.1841), metadata={op_type="Mean" op_name="functional_1/global_average_pooling2d_1/Mean" source_file="/home/smin/anaconda3/envs/tvb-ai/lib/python3.9/site-packages/tensorflow/python/framework/ops.py" source_line=1177}
+  %parameter_1.2 = f32[32,1024]{1,0} parameter(1)
+  ROOT %dot.55 = f32[2048,1024]{1,0} dot(f32[32,2048]{1,0} %multiply.2049, f32[32,1024]{1,0} %parameter_1.2), lhs_contracting_dims={0}, rhs_contracting_dims={0}, frontend_attributes={grad_x="false",grad_y="true"}, metadata={op_type="MatMul" op_name="gradient_tape/functional_1/dense_1/MatMul/MatMul_1" source_file="/home/smin/anaconda3/envs/tvb-ai/lib/python3.9/site-packages/tensorflow/python/framework/ops.py" source_line=1177}
+}
