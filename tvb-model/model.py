@@ -7,7 +7,7 @@ from tensorflow.keras.regularizers import l2
 from config import *
 
 def build_xception():
-    mirrored_strategy = tf.distribute.MirroredStrategy()
+    mirrored_strategy = tf.distribute.MirroredStrategy(devices=["/GPU:0","/GPU:1"])
     with mirrored_strategy.scope():
         xception_model = Xception(weights=XCEPTION_MODEL_WEIGHT, include_top=XCEPTION_MODEL_INCLUDE_TOP, input_shape=XCEPTION_MODEL_INPUT_SHAPE)
 
