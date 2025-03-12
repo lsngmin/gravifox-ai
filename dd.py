@@ -8,7 +8,15 @@ from tensorflow.keras.regularizers import l2
 from tensorflow.keras.optimizers.schedules import CosineDecay
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
-
+gpus = tf.config.list_physical_devices('GPU')  # GPU 목록 확인
+if gpus:
+    try:
+        # 모든 GPU에 대해 메모리 자동 확장 설정
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print("모든 GPU에 대해 메모리 자동 확장 설정 완료.")
+    except RuntimeError as e:
+        print("GPU 메모리 자동 확장 설정 실패:", e)
 
 # 모델 구성
 xception_model = Xception(weights='imagenet', include_top=False, input_shape=(256, 256, 3))
@@ -37,8 +45,8 @@ optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
 model = Model(inputs=xception_model.input, outputs=x)
 model.compile(optimizer=optimizer, loss='binary_crossentropy', metrics=['accuracy'])
 
-train_dir = "Dataset/Train/"
-validation_dir = "Dataset/Validation/"
+train_dir = "tvb-model/Dataset/Train/"
+validation_dir = "tvb-model/Dataset/Validation/"
 batch_size = 32
 img_size = (256, 256)
 
