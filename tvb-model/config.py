@@ -5,7 +5,7 @@ VALIDATION_DIR = "Dataset/Validation/"
 TEST_DIR = "Dataset/Test/"
 
 # data_loader.py config setting
-BATCH_SIZE = 256
+BATCH_SIZE = 128
 IMG_SIZE = (256, 256)
 EPOCHS = 20
 CLASS_MODE = 'binary'
@@ -38,7 +38,7 @@ XCEPTION_MODEL_METRICS = ['accuracy']
 
 # Learning Schedular
 INITIAL_LEARNING_RATE = 0.001
-DECAY_STEPS = 10937
+DECAY_STEPS = 21875
 ALPHA = 0.1
 
 # EARLY_STOP
