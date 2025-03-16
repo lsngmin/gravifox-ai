@@ -1,8 +1,11 @@
 import numpy as np
 import tensorflow as tf
 from keras.src.utils import load_img, img_to_array
-
 from data_loader import get_testData_generators
+
+test_generator = get_testData_generators()
+print(test_generator.class_indices)
+
 loaded_model = tf.keras.models.load_model('xception_model-2.h5')
 
 image_path = "ex/t.png"  # 테스트할 이미지 파일 경로
