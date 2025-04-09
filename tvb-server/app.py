@@ -41,3 +41,6 @@ async def upload_image(file: UploadFile = File(...)):
     # return JSONResponse(content={"predicted_class": predicted_class})
     return {"received_message": "good"}
 
+@app.get("/")
+async  def index():
+    return {"received_message": "Hello World"}
