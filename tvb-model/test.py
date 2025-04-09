@@ -3,8 +3,7 @@ import tensorflow as tf
 from keras.src.utils import load_img, img_to_array
 from data_loader import get_testData_generators
 
-loaded_model = tf.keras.models.load_model('xception_model-2.h5')
-
+c
 image_path = "ex/t1.jpg"  # 테스트할 이미지 파일 경로
 
 # 1. 이미지 로드 및 전처리
