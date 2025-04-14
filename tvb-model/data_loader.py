@@ -7,14 +7,14 @@ def get_data_generators():
     train_ds = tf_keras.utils.image_dataset_from_directory(
         TRAIN_DIR,
         image_size=IMG_SIZE,
-        batch_size=BATCH_SIZE,
+        batch_size=64,
         label_mode='binary',  # CLASS_MODE에 따라 맞춤
     )
 
     val_ds = tf_keras.utils.image_dataset_from_directory(
         VALIDATION_DIR,
         image_size=IMG_SIZE,
-        batch_size=BATCH_SIZE,
+        batch_size=64,
         label_mode='binary',
     )
 

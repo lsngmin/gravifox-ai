@@ -25,8 +25,6 @@ with strategy.scope():
 
     train, validation = get_data_generators()
 
-
-
     model.fit(
         train,
         epochs=EPOCHS,
