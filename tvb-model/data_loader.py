@@ -45,27 +45,35 @@ def augment(image, label):
     """
     데이터 증강 함수
     """
-
-    # 회전 (ROTATION_RANGE 범위 내에서)
+    # 좌우 플립
     image = tf.image.random_flip_left_right(image)
     image = tf.image.random_flip_up_down(image)
 
-    # 회전
+    # 회전 (ROTATION_RANGE 범위 내에서)
     if ROTATION_RANGE > 0:
         image = tf.image.rot90(image, k=tf.random.uniform([], 0, 4, dtype=tf.int32))
 
     # 밝기 조정 (BRIGHTNESS_RANGE 범위 내에서)
     image = tf.image.random_brightness(image, max_delta=BRIGHTNESS_RANGE[1] - 1)
 
-    # 이미지 크기 조정 (ZOOM_RANGE 범위 내에서)
-    if ZOOM_RANGE > 0:
-        image = tf.image.random_zoom(image, zoom_range=(1-ZOOM_RANGE, 1+ZOOM_RANGE))
-
     # 색상 변화 (SHEAR_RANGE 적용)
     image = tf.image.random_hue(image, max_delta=SHEAR_RANGE)
     image = tf.image.random_saturation(image, lower=0.5, upper=1.5)
 
-    # 크기 조정
+    # 이미지 크기 조정 (ZOOM_RANGE 적용)
+    if ZOOM_RANGE > 0:
+        # 이미지를 줌인/줌아웃 효과를 주기 위해 크기 변경 후 중심을 잘라냄
+        scale_factor = tf.random.uniform([], 1 - ZOOM_RANGE, 1 + ZOOM_RANGE)
+        new_width = tf.cast(tf.shape(image)[0] * scale_factor, tf.int32)
+        new_height = tf.cast(tf.shape(image)[1] * scale_factor, tf.int32)
+
+        # 이미지 크기 변경
+        image = tf.image.resize(image, (new_height, new_width))
+
+        # 중심을 자르기 위한 위치 계산
+        image = tf.image.resize_with_crop_or_pad(image, IMG_SIZE[0], IMG_SIZE[1])
+
+    # 이미지 크기 조정
     image = tf.image.resize(image, IMG_SIZE)
 
     return image, label
