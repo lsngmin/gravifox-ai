@@ -7,39 +7,75 @@ import tensorflow as tf
 from config import *
 
 
+def get_dataset_from_directory(directory, is_training=True):
+    """Create a tf.data.Dataset from directory."""
+    # Get all class subdirectories
+    class_dirs = sorted([d for d in os.listdir(directory) if os.path.isdir(os.path.join(directory, d))])
+    class_indices = {cls_name: i for i, cls_name in enumerate(class_dirs)}
+
+    # Build paths and labels
+    image_paths = []
+    labels = []
+
+    for class_name in class_dirs:
+        class_path = os.path.join(directory, class_name)
+        class_idx = class_indices[class_name]
+
+        # Get all image files in this class directory
+        class_images = glob.glob(os.path.join(class_path, "*.jpg")) + \
+                       glob.glob(os.path.join(class_path, "*.jpeg")) + \
+                       glob.glob(os.path.join(class_path, "*.png"))
+
+        image_paths.extend(class_images)
+
+        if CLASS_MODE == 'categorical':
+            # One-hot encoding
+            label = tf.keras.utils.to_categorical(class_idx, num_classes=len(class_dirs))
+            labels.extend([label] * len(class_images))
+        else:
+            # Binary or sparse
+            labels.extend([class_idx] * len(class_images))
+
+    # Create tensor slices
+    path_ds = tf.data.Dataset.from_tensor_slices(image_paths)
+    label_ds = tf.data.Dataset.from_tensor_slices(labels)
+
+    # Combine paths and labels
+    dataset = tf.data.Dataset.zip((path_ds, label_ds))
+
+    # Shuffle during training
+    if is_training:
+        dataset = dataset.shuffle(buffer_size=len(image_paths))
+
+    # Map to parse and augment images
+    dataset = dataset.map(parse_image, num_parallel_calls=tf.data.AUTOTUNE)
+
+    if is_training:
+        dataset = dataset.map(augment_image, num_parallel_calls=tf.data.AUTOTUNE)
+
+    # Batch and prefetch
+    dataset = dataset.batch(BATCH_SIZE)
+    dataset = dataset.prefetch(tf.data.AUTOTUNE)
+
+    return dataset
+
+
 def parse_image(file_path, label):
-    """Parse image and label from file path."""
+    """Parse image from a file path."""
+    # file_path is now correctly a string tensor
     img = tf.io.read_file(file_path)
-    img = tf.image.decode_jpeg(img, channels=3)
+    img = tf.image.decode_image(img, channels=3, expand_animations=False)
     img = tf.image.resize(img, IMG_SIZE)
-    img = img / 255.0  # rescale equivalent to RESCALE=1./255
+    img = tf.cast(img, tf.float32) / 255.0  # rescale
     return img, label
 
 
 def augment_image(image, label):
-    """Apply augmentations similar to your ImageDataGenerator settings."""
+    """Apply image augmentations."""
     # Random rotation
     if ROTATION_RANGE:
         angle = tf.random.uniform([], -ROTATION_RANGE, ROTATION_RANGE, dtype=tf.float32)
         image = tf.image.rot90(image, k=tf.cast(angle / 90, tf.int32))
-
-    # Width and height shifts
-    if WIDTH_SHIFT_RANGE:
-        w_shift = tf.random.uniform([], -WIDTH_SHIFT_RANGE, WIDTH_SHIFT_RANGE) * IMG_SIZE[0]
-        image = tf.roll(image, tf.cast(w_shift, tf.int32), axis=1)
-
-    if HEIGHT_SHIFT_RANGE:
-        h_shift = tf.random.uniform([], -HEIGHT_SHIFT_RANGE, HEIGHT_SHIFT_RANGE) * IMG_SIZE[1]
-        image = tf.roll(image, tf.cast(h_shift, tf.int32), axis=0)
-
-    # Random zoom
-    if ZOOM_RANGE:
-        zoom_factor = tf.random.uniform([], 1.0 - ZOOM_RANGE, 1.0 + ZOOM_RANGE)
-        orig_height, orig_width = IMG_SIZE
-        h = tf.cast(orig_height * zoom_factor, tf.int32)
-        w = tf.cast(orig_width * zoom_factor, tf.int32)
-        image = tf.image.resize(image, [h, w])
-        image = tf.image.resize_with_crop_or_pad(image, orig_height, orig_width)
 
     # Horizontal flip
     if HORIZONTAL_FLIP:
@@ -50,47 +86,32 @@ def augment_image(image, label):
         min_brightness, max_brightness = BRIGHTNESS_RANGE
         brightness_factor = tf.random.uniform([], min_brightness, max_brightness)
         image = tf.image.adjust_brightness(image, brightness_factor - 1.0)
-        image = tf.clip_by_value(image, 0.0, 1.0)
+
+    # Random zoom (center crop and resize)
+    if ZOOM_RANGE:
+        scale = tf.random.uniform([], 1.0 - ZOOM_RANGE, 1.0 + ZOOM_RANGE)
+        new_h = tf.cast(tf.cast(IMG_SIZE[0], tf.float32) * scale, tf.int32)
+        new_w = tf.cast(tf.cast(IMG_SIZE[1], tf.float32) * scale, tf.int32)
+
+        # Resize then crop back to original size (zoom effect)
+        image = tf.image.resize(image, [new_h, new_w])
+        image = tf.image.resize_with_crop_or_pad(image, IMG_SIZE[0], IMG_SIZE[1])
+
+    # Ensure values are in valid range
+    image = tf.clip_by_value(image, 0.0, 1.0)
 
     return image, label
 
 
-def get_dataset_from_directory(directory, is_training=True):
-    """Create a tf.data.Dataset from directory."""
-    # Get file paths and labels
-    dataset = tf.keras.preprocessing.image_dataset_from_directory(
-        directory,
-        batch_size=None,  # We'll batch later
-        image_size=IMG_SIZE,
-        label_mode='categorical' if CLASS_MODE == 'categorical' else 'binary',
-        shuffle=is_training
-    )
-
-    # Parse images
-    dataset = dataset.map(parse_image, num_parallel_calls=tf.data.AUTOTUNE)
-
-    # Apply augmentation during training
-    if is_training:
-        dataset = dataset.map(augment_image, num_parallel_calls=tf.data.AUTOTUNE)
-
-    # Batch the dataset
-    dataset = dataset.batch(BATCH_SIZE)
-
-    # Use prefetch to overlap data preprocessing and model execution
-    dataset = dataset.prefetch(tf.data.AUTOTUNE)
-
-    return dataset
-
-
 def get_data_generators():
-    """Replacement for the original function using tf.data API."""
+    """Create training and validation datasets."""
     train_dataset = get_dataset_from_directory(TRAIN_DIR, is_training=True)
     validation_dataset = get_dataset_from_directory(VALIDATION_DIR, is_training=False)
     return train_dataset, validation_dataset
 
 
 def get_testData_generators():
-    """Replacement for the test data function using tf.data API."""
+    """Create test dataset."""
     test_dataset = get_dataset_from_directory(TEST_DIR, is_training=False)
     return test_dataset
 
