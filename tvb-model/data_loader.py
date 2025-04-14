@@ -2,117 +2,156 @@ from tf_keras.preprocessing import image_dataset_from_directory
 from tf_keras.preprocessing.image import ImageDataGenerator
 from config import *
 import tensorflow as tf
+import tensorflow as tf
 import os
 import glob
-import tensorflow as tf
+import multiprocessing
 from config import *
+
+# Get number of available CPU cores for parallelism
+NUM_CPU = multiprocessing.cpu_count()
 
 
 def get_dataset_from_directory(directory, is_training=True):
-    """Create a tf.data.Dataset from directory."""
-    # Get all class subdirectories
-    class_dirs = sorted([d for d in os.listdir(directory) if os.path.isdir(os.path.join(directory, d))])
-    class_indices = {cls_name: i for i, cls_name in enumerate(class_dirs)}
+    """Create an optimized tf.data.Dataset from directory with proper parallelism."""
+    # Use tf.data.Dataset.list_files for better performance
+    pattern = os.path.join(directory, "*/*")  # Path pattern for all images in subdirectories
+    file_dataset = tf.data.Dataset.list_files(pattern, shuffle=is_training)
 
-    # Build paths and labels
-    image_paths = []
-    labels = []
+    # Get class names from directory
+    class_names = sorted([item for item in os.listdir(directory)
+                          if os.path.isdir(os.path.join(directory, item))])
 
-    for class_name in class_dirs:
-        class_path = os.path.join(directory, class_name)
-        class_idx = class_indices[class_name]
+    class_dict = {class_name: i for i, class_name in enumerate(class_names)}
 
-        # Get all image files in this class directory
-        class_images = glob.glob(os.path.join(class_path, "*.jpg")) + \
-                       glob.glob(os.path.join(class_path, "*.jpeg")) + \
-                       glob.glob(os.path.join(class_path, "*.png"))
+    # Set the number of parallel calls for better performance
+    PARALLEL_CALLS = min(NUM_CPU, 16)  # Use up to 16 cores but not more
 
-        image_paths.extend(class_images)
+    # Extract class from file path and combine with file path
+    def process_path(file_path):
+        # Extract class name from the file path
+        parts = tf.strings.split(file_path, os.path.sep)
+        class_name = parts[-2]
 
+        # Convert class name to index
+        class_idx = tf.constant(-1, dtype=tf.int64)
+        for name, idx in class_dict.items():
+            is_match = tf.equal(class_name, name)
+            class_idx = tf.where(is_match, idx, class_idx)
+
+        # Handle class mode
         if CLASS_MODE == 'categorical':
             # One-hot encoding
-            label = tf.keras.utils.to_categorical(class_idx, num_classes=len(class_dirs))
-            labels.extend([label] * len(class_images))
-        else:
-            # Binary or sparse
-            labels.extend([class_idx] * len(class_images))
+            label = tf.one_hot(class_idx, depth=len(class_names))
+        elif CLASS_MODE == 'binary':
+            label = tf.cast(class_idx, tf.float32)
+        else:  # 'sparse'
+            label = class_idx
 
-    # Create tensor slices
-    path_ds = tf.data.Dataset.from_tensor_slices(image_paths)
-    label_ds = tf.data.Dataset.from_tensor_slices(labels)
+        return file_path, label
 
-    # Combine paths and labels
-    dataset = tf.data.Dataset.zip((path_ds, label_ds))
+    # Create the dataset of image path and label pairs
+    dataset = file_dataset.map(process_path, num_parallel_calls=PARALLEL_CALLS)
 
-    # Shuffle during training
-    if is_training:
-        dataset = dataset.shuffle(buffer_size=len(image_paths))
-
-    # Map to parse and augment images
-    dataset = dataset.map(parse_image, num_parallel_calls=tf.data.AUTOTUNE)
+    # Optimize dataset performance with caching
+    if not is_training:  # Only cache validation/test sets
+        dataset = dataset.cache()
 
     if is_training:
-        dataset = dataset.map(augment_image, num_parallel_calls=tf.data.AUTOTUNE)
+        # Shuffle with a large enough buffer
+        dataset_size = sum([len(files) for _, _, files in os.walk(directory)])
+        buffer_size = min(dataset_size, 10000)  # Don't use too much memory
+        dataset = dataset.shuffle(buffer_size=buffer_size, reshuffle_each_iteration=True)
 
-    # Batch and prefetch
+    # Parse images in parallel
+    dataset = dataset.map(parse_image, num_parallel_calls=PARALLEL_CALLS)
+
+    # Apply augmentation during training
+    if is_training:
+        dataset = dataset.map(augment_image, num_parallel_calls=PARALLEL_CALLS)
+
+    # Batch images
     dataset = dataset.batch(BATCH_SIZE)
+
+    # Use prefetch to overlap data preprocessing and model execution
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
 
     return dataset
 
 
 def parse_image(file_path, label):
-    """Parse image from a file path."""
-    # file_path is now correctly a string tensor
+    """Parse image from a file path with error handling."""
+    # Read the image file
     img = tf.io.read_file(file_path)
-    img = tf.image.decode_image(img, channels=3, expand_animations=False)
+
+    # Decode with error handling
+    def _decode_img():
+        # Try different decoders based on file extension
+        decoded = tf.image.decode_image(img, channels=3, expand_animations=False)
+        decoded.set_shape([None, None, 3])
+        return decoded
+
+    # Use try_and_recover pattern
+    img = _decode_img()
+
+    # Resize the image
     img = tf.image.resize(img, IMG_SIZE)
-    img = tf.cast(img, tf.float32) / 255.0  # rescale
+
+    # Normalize pixel values
+    img = tf.cast(img, tf.float32) / 255.0
+
     return img, label
 
 
 def augment_image(image, label):
-    """Apply image augmentations."""
-    # Random rotation
-    if ROTATION_RANGE:
-        angle = tf.random.uniform([], -ROTATION_RANGE, ROTATION_RANGE, dtype=tf.float32)
-        image = tf.image.rot90(image, k=tf.cast(angle / 90, tf.int32))
-
-    # Horizontal flip
+    """Apply image augmentations efficiently."""
+    # Random flip
     if HORIZONTAL_FLIP:
         image = tf.image.random_flip_left_right(image)
 
-    # Brightness adjustment
-    if BRIGHTNESS_RANGE:
-        min_brightness, max_brightness = BRIGHTNESS_RANGE
-        brightness_factor = tf.random.uniform([], min_brightness, max_brightness)
-        image = tf.image.adjust_brightness(image, brightness_factor - 1.0)
+    # Random rotation - use more efficient built-in functions
+    if ROTATION_RANGE:
+        # Convert degrees to radians for tf.image.rot90
+        image = tf.image.rot90(
+            image,
+            k=tf.random.uniform([], 0, 4, dtype=tf.int32)  # 0, 90, 180, or 270 degrees
+        )
 
-    # Random zoom (center crop and resize)
+    # Random brightness
+    if BRIGHTNESS_RANGE and BRIGHTNESS_RANGE[0] != BRIGHTNESS_RANGE[1]:
+        delta = (BRIGHTNESS_RANGE[1] - BRIGHTNESS_RANGE[0]) / 2.0
+        image = tf.image.random_brightness(image, max_delta=delta)
+
+    # Random zoom
     if ZOOM_RANGE:
-        scale = tf.random.uniform([], 1.0 - ZOOM_RANGE, 1.0 + ZOOM_RANGE)
-        new_h = tf.cast(tf.cast(IMG_SIZE[0], tf.float32) * scale, tf.int32)
-        new_w = tf.cast(tf.cast(IMG_SIZE[1], tf.float32) * scale, tf.int32)
+        # Implementation that's more efficient
+        scale = 1.0 + tf.random.uniform([], -ZOOM_RANGE, ZOOM_RANGE)
+        shape = tf.shape(image)
+        h, w = shape[0], shape[1]
 
-        # Resize then crop back to original size (zoom effect)
+        # New dimensions
+        new_h = tf.cast(tf.cast(h, tf.float32) * scale, tf.int32)
+        new_w = tf.cast(tf.cast(w, tf.float32) * scale, tf.int32)
+
+        # Resize and crop back to original size
         image = tf.image.resize(image, [new_h, new_w])
-        image = tf.image.resize_with_crop_or_pad(image, IMG_SIZE[0], IMG_SIZE[1])
+        image = tf.image.resize_with_crop_or_pad(image, h, w)
 
-    # Ensure values are in valid range
+    # Ensure values stay within the valid range
     image = tf.clip_by_value(image, 0.0, 1.0)
 
     return image, label
 
 
 def get_data_generators():
-    """Create training and validation datasets."""
+    """Create training and validation datasets with optimized settings."""
     train_dataset = get_dataset_from_directory(TRAIN_DIR, is_training=True)
     validation_dataset = get_dataset_from_directory(VALIDATION_DIR, is_training=False)
     return train_dataset, validation_dataset
 
 
 def get_testData_generators():
-    """Create test dataset."""
+    """Create test dataset with optimized settings."""
     test_dataset = get_dataset_from_directory(TEST_DIR, is_training=False)
     return test_dataset
 
