@@ -5,9 +5,9 @@ VALIDATION_DIR = "Dataset/Validation/"
 TEST_DIR = "Dataset/Test/"
 
 # data_loader.py config setting
-BATCH_SIZE = 128
+BATCH_SIZE = 512
 IMG_SIZE = (256, 256)
-EPOCHS = 1
+EPOCHS = 20
 CLASS_MODE = 'binary'
 
 # data_loader.py Image Aug
