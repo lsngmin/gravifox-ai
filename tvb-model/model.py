@@ -1,3 +1,4 @@
+import tf_keras
 from tf_keras.applications import Xception
 from tf_keras.layers import GlobalAveragePooling2D, Dense, Dropout
 from tf_keras.models import Model
@@ -5,7 +6,7 @@ from tf_keras.optimizers.schedules import CosineDecay
 import tensorflow as tf
 from tf_keras.regularizers import l2
 from config import *
-
+from tf_keras.optimizers import Adam
 def build_xception():
     xception_model = Xception(weights=XCEPTION_MODEL_WEIGHT, include_top=XCEPTION_MODEL_INCLUDE_TOP, input_shape=XCEPTION_MODEL_INPUT_SHAPE)
 
@@ -15,7 +16,7 @@ def build_xception():
     x = Dropout(XCEPTION_MODEL_DROPOUT)(x)
     x = Dense(1, activation=XCEPTION_MODEL_OUTPUT_DENSE_LAYER_ACTIVATION)(x)
 
-    optimizer = tf.keras.optimizers.Adam(learning_rate=learningSchedular_CosineDecay())
+    optimizer = tf_keras.optimizers.Adam(learning_rate=learningSchedular_CosineDecay())
 
     model = Model(inputs=xception_model.input, outputs=x)
     model.compile(optimizer=optimizer, loss=XCEPTION_MODEL_LOSS, metrics=XCEPTION_MODEL_METRICS)
