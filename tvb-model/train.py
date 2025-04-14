@@ -25,11 +25,16 @@ with strategy.scope():
 
     train, validation = get_data_generators()
 
+    tf.config.threading.set_intra_op_parallelism_threads(32)
+    tf.config.threading.set_inter_op_parallelism_threads(4)
+
     model.fit(
         train,
         epochs=EPOCHS,
         batch_size=BATCH_SIZE,
         validation_data=validation,
-        callbacks=[es(), tb()]
+        callbacks=[es(), tb()],
+        use_multiprocessing=True,
+        workers=60
     )
     model.save("Xception", save_format="tf")
