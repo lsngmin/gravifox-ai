@@ -63,22 +63,23 @@ def augment(image, label):
     # 이미지 크기 조정 (ZOOM_RANGE 적용)
     if ZOOM_RANGE > 0:
         # 이미지를 줌인/줌아웃 효과를 주기 위해 크기 변경 후 중심을 잘라냄
-        scale_factor = tf.random.uniform([], 1 - ZOOM_RANGE, 1 + ZOOM_RANGE)
-        new_width = tf.cast(tf.shape(image)[0] * scale_factor, tf.int32)
-        new_height = tf.cast(tf.shape(image)[1] * scale_factor, tf.int32)
+        scale_factor = tf.random.uniform([], 1 - ZOOM_RANGE, 1 + ZOOM_RANGE, dtype=tf.float32)
+
+        # 이미지의 새 크기 계산
+        height, width, _ = tf.shape(image)
+        new_height = tf.cast(tf.cast(height, tf.float32) * scale_factor, tf.int32)
+        new_width = tf.cast(tf.cast(width, tf.float32) * scale_factor, tf.int32)
 
         # 이미지 크기 변경
-        image = tf.image.resize(image, (new_height, new_width))
+        image = tf.image.resize(image, [new_height, new_width])
 
-        # 중심을 자르기 위한 위치 계산
+        # 중심을 자르기 위한 위치 계산 (원본 이미지 크기로 맞추기)
         image = tf.image.resize_with_crop_or_pad(image, IMG_SIZE[0], IMG_SIZE[1])
 
     # 이미지 크기 조정
     image = tf.image.resize(image, IMG_SIZE)
 
     return image, label
-
-
 
 #
 # def get_data_generators():
