@@ -19,7 +19,7 @@ def build_xception():
     optimizer = tf_keras.optimizers.Adam(learning_rate=learningSchedular_CosineDecay())
 
     model = Model(inputs=xception_model.input, outputs=x)
-    model.compile(optimizer=optimizer, loss=XCEPTION_MODEL_LOSS, metrics=XCEPTION_MODEL_METRICS)
+    model.compile(optimizer=optimizer, loss=XCEPTION_MODEL_LOSS, metrics=XCEPTION_MODEL_METRICS, jit_compile=True)
 
     return model
 

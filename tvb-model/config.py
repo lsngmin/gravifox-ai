@@ -5,7 +5,7 @@ VALIDATION_DIR = "Dataset/Validation/"
 TEST_DIR = "Dataset/Test/"
 
 # data_loader.py config setting
-BATCH_SIZE = 256
+BATCH_SIZE = 384
 IMG_SIZE = (256, 256)
 EPOCHS = 20
 CLASS_MODE = 'binary'
