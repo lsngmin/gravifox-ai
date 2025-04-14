@@ -31,9 +31,14 @@ def get_data_generators():
         tf_keras.layers.RandomTranslation(0.1, 0.1),
     ])
 
+    def preprocess(image, label):
+        # image에만 augmentation을 적용하고 label은 그대로 반환
+        image = data_augmentation(image)
+        return image, label
+
     train_ds = (
         train_ds
-        .map(data_augmentation, num_parallel_calls=AUTOTUNE)
+        .map(preprocess, num_parallel_calls=AUTOTUNE)
         .prefetch(AUTOTUNE)
     )
 
