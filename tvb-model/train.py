@@ -5,7 +5,7 @@ from data_loader import get_data_generators
 from model import build_xception
 from config import *
 
-tf.config.threading.set_intra_op_parallelism_threads(16)
+tf.config.threading.set_intra_op_parallelism_threads(32)
 tf.config.threading.set_inter_op_parallelism_threads(4)
 gpus = tf.config.list_physical_devices("GPU")
 if gpus:
@@ -36,7 +36,7 @@ with strategy.scope():
         validation_data=validation,
         callbacks=[es(), tb()],
         use_multiprocessing=True,
-        workers=16,
-        max_queue_size=10
+        workers=60,
+        max_queue_size=100
     )
     model.save("Xception", save_format="tf")
