@@ -3,85 +3,97 @@ from tf_keras.preprocessing.image import ImageDataGenerator
 from config import *
 import tensorflow as tf
 
-def load_data_from_directory(directory, batch_size, img_size, augment_fn=None):
-    """
-    디렉토리에서 이미지를 로드하고 tf.data.Dataset으로 변환 및 증강 함수 적용
-    """
-    dataset = image_dataset_from_directory(
-        directory,
-        image_size=img_size,
-        batch_size=batch_size,
-        label_mode=CLASS_MODE,
-        shuffle=True,  # 학습 데이터는 섞어줘야 하므로 True
-    )
-
-    # 이미지 크기와 증강을 처리하기 위해 `map` 사용
-    if augment_fn:
-        dataset = dataset.map(augment_fn, num_parallel_calls=tf.data.AUTOTUNE)
-
-    return dataset
-
-def get_data_generators():
-    # 훈련 데이터와 검증 데이터를 로드하고 증강 설정 적용
-    train_dataset = load_data_from_directory(TRAIN_DIR, BATCH_SIZE, IMG_SIZE, augment)
-    val_dataset = load_data_from_directory(VALIDATION_DIR, BATCH_SIZE, IMG_SIZE)
-
-    return train_dataset, val_dataset
+import tensorflow as tf
+from config import *
 
 
-
-def get_testData_generators():
-    test_dataset = image_dataset_from_directory(
-        TEST_DIR,
-        image_size=IMG_SIZE,
-        batch_size=BATCH_SIZE,
-        label_mode=CLASS_MODE,
-        shuffle=False  # 테스트 데이터는 섞지 않음
-    )
-    return test_dataset
+def parse_image(file_path, label):
+    """Parse image and label from file path."""
+    img = tf.io.read_file(file_path)
+    img = tf.image.decode_jpeg(img, channels=3)
+    img = tf.image.resize(img, IMG_SIZE)
+    img = img / 255.0  # rescale equivalent to RESCALE=1./255
+    return img, label
 
 
-def augment(image, label):
-    """
-    데이터 증강 함수
-    """
-    # 좌우 플립
-    image = tf.image.random_flip_left_right(image)
-    image = tf.image.random_flip_up_down(image)
+def augment_image(image, label):
+    """Apply augmentations similar to your ImageDataGenerator settings."""
+    # Random rotation
+    if ROTATION_RANGE:
+        angle = tf.random.uniform([], -ROTATION_RANGE, ROTATION_RANGE, dtype=tf.float32)
+        image = tf.image.rot90(image, k=tf.cast(angle / 90, tf.int32))
 
-    # 회전 (ROTATION_RANGE 범위 내에서)
-    if ROTATION_RANGE > 0:
-        image = tf.image.rot90(image, k=tf.random.uniform([], 0, 4, dtype=tf.int32))
+    # Width and height shifts
+    if WIDTH_SHIFT_RANGE:
+        w_shift = tf.random.uniform([], -WIDTH_SHIFT_RANGE, WIDTH_SHIFT_RANGE) * IMG_SIZE[0]
+        image = tf.roll(image, tf.cast(w_shift, tf.int32), axis=1)
 
-    # 밝기 조정 (BRIGHTNESS_RANGE 범위 내에서)
-    image = tf.image.random_brightness(image, max_delta=BRIGHTNESS_RANGE[1] - 1)
+    if HEIGHT_SHIFT_RANGE:
+        h_shift = tf.random.uniform([], -HEIGHT_SHIFT_RANGE, HEIGHT_SHIFT_RANGE) * IMG_SIZE[1]
+        image = tf.roll(image, tf.cast(h_shift, tf.int32), axis=0)
 
-    # 색상 변화 (SHEAR_RANGE 적용)
-    image = tf.image.random_hue(image, max_delta=SHEAR_RANGE)
-    image = tf.image.random_saturation(image, lower=0.5, upper=1.5)
+    # Random zoom
+    if ZOOM_RANGE:
+        zoom_factor = tf.random.uniform([], 1.0 - ZOOM_RANGE, 1.0 + ZOOM_RANGE)
+        orig_height, orig_width = IMG_SIZE
+        h = tf.cast(orig_height * zoom_factor, tf.int32)
+        w = tf.cast(orig_width * zoom_factor, tf.int32)
+        image = tf.image.resize(image, [h, w])
+        image = tf.image.resize_with_crop_or_pad(image, orig_height, orig_width)
 
-    # 이미지 크기 조정 (ZOOM_RANGE 적용)
-    if ZOOM_RANGE > 0:
-        # 이미지를 줌인/줌아웃 효과를 주기 위해 크기 변경 후 중심을 잘라냄
-        scale_factor = tf.random.uniform([], 1 - ZOOM_RANGE, 1 + ZOOM_RANGE, dtype=tf.float32)
+    # Horizontal flip
+    if HORIZONTAL_FLIP:
+        image = tf.image.random_flip_left_right(image)
 
-        # 이미지의 새 크기 계산
-        height, width, _ = tf.shape(image)
-        new_height = tf.cast(tf.cast(height, tf.float32) * scale_factor, tf.int32)
-        new_width = tf.cast(tf.cast(width, tf.float32) * scale_factor, tf.int32)
-
-        # 이미지 크기 변경
-        image = tf.image.resize(image, [new_height, new_width])
-
-        # 중심을 자르기 위한 위치 계산 (원본 이미지 크기로 맞추기)
-        image = tf.image.resize_with_crop_or_pad(image, IMG_SIZE[0], IMG_SIZE[1])
-
-    # 이미지 크기 조정
-    image = tf.image.resize(image, IMG_SIZE)
+    # Brightness adjustment
+    if BRIGHTNESS_RANGE:
+        min_brightness, max_brightness = BRIGHTNESS_RANGE
+        brightness_factor = tf.random.uniform([], min_brightness, max_brightness)
+        image = tf.image.adjust_brightness(image, brightness_factor - 1.0)
+        image = tf.clip_by_value(image, 0.0, 1.0)
 
     return image, label
 
-#
+
+def get_dataset_from_directory(directory, is_training=True):
+    """Create a tf.data.Dataset from directory."""
+    # Get file paths and labels
+    dataset = tf.keras.preprocessing.image_dataset_from_directory(
+        directory,
+        batch_size=None,  # We'll batch later
+        image_size=IMG_SIZE,
+        label_mode='categorical' if CLASS_MODE == 'categorical' else 'binary',
+        shuffle=is_training
+    )
+
+    # Parse images
+    dataset = dataset.map(parse_image, num_parallel_calls=tf.data.AUTOTUNE)
+
+    # Apply augmentation during training
+    if is_training:
+        dataset = dataset.map(augment_image, num_parallel_calls=tf.data.AUTOTUNE)
+
+    # Batch the dataset
+    dataset = dataset.batch(BATCH_SIZE)
+
+    # Use prefetch to overlap data preprocessing and model execution
+    dataset = dataset.prefetch(tf.data.AUTOTUNE)
+
+    return dataset
+
+
+def get_data_generators():
+    """Replacement for the original function using tf.data API."""
+    train_dataset = get_dataset_from_directory(TRAIN_DIR, is_training=True)
+    validation_dataset = get_dataset_from_directory(VALIDATION_DIR, is_training=False)
+    return train_dataset, validation_dataset
+
+
+def get_testData_generators():
+    """Replacement for the test data function using tf.data API."""
+    test_dataset = get_dataset_from_directory(TEST_DIR, is_training=False)
+    return test_dataset
+
 # def get_data_generators():
 #     train_datagen = ImageDataGenerator(
 #         rescale=RESCALE,
@@ -102,8 +114,6 @@ def augment(image, label):
 #         target_size=IMG_SIZE,
 #         batch_size=BATCH_SIZE,
 #         class_mode=CLASS_MODE,
-#         workers=32,
-#         max_queue_size=2560
 #     )
 #
 #     validation_generator = val_datagen.flow_from_directory(
@@ -111,8 +121,6 @@ def augment(image, label):
 #         target_size=IMG_SIZE,
 #         batch_size=BATCH_SIZE,
 #         class_mode=CLASS_MODE,
-#         worker=32,
-#         max_queue_size=2560
 #     )
 #     return train_generator, validation_generator
 #

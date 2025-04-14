@@ -23,19 +23,44 @@ with strategy.scope():
     policy = mixed_precision.Policy('mixed_float16')
     mixed_precision.set_global_policy(policy)
 
+    # Get datasets that are already configured with the tf.data API
     train_dataset, val_dataset = get_data_generators()
 
-    train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)  # 성능 향상: 데이터 전처리와 모델 훈련을 병렬로 수행
+    # Note: The prefetch is already included in the get_data_generators function,
+    # but it doesn't hurt to add it again for clarity
+    train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
     val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
 
     model.fit(
         train_dataset,
         epochs=EPOCHS,
-        batch_size=BATCH_SIZE,
+        # Remove batch_size parameter - it's already defined in the dataset
         validation_data=val_dataset,
         callbacks=[es(), tb()],
-        use_multiprocessing=True,
-        workers=128,
-        max_queue_size=512
+        # Remove these parameters as they don't apply to tf.data API
+        # use_multiprocessing, workers, and max_queue_size are only for keras generators
     )
     model.save("Xception", save_format="tf")
+
+# with strategy.scope():
+#     model = build_xception()
+#
+#     policy = mixed_precision.Policy('mixed_float16')
+#     mixed_precision.set_global_policy(policy)
+#
+#     train_dataset, val_dataset = get_data_generators()
+#
+#     train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)  # 성능 향상: 데이터 전처리와 모델 훈련을 병렬로 수행
+#     val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
+#
+#     model.fit(
+#         train_dataset,
+#         epochs=EPOCHS,
+#         batch_size=BATCH_SIZE,
+#         validation_data=val_dataset,
+#         callbacks=[es(), tb()],
+#         use_multiprocessing=True,
+#         workers=128,
+#         max_queue_size=512
+#     )
+#     model.save("Xception", save_format="tf")
