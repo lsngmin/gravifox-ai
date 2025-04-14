@@ -23,16 +23,19 @@ with strategy.scope():
     policy = mixed_precision.Policy('mixed_float16')
     mixed_precision.set_global_policy(policy)
 
-    train_ds, val_ds = get_data_generators()
+    train_dataset, val_dataset = get_data_generators()
+
+    train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)  # 성능 향상: 데이터 전처리와 모델 훈련을 병렬로 수행
+    val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
 
     model.fit(
-        train_ds,
+        train_dataset,
         epochs=EPOCHS,
         batch_size=BATCH_SIZE,
-        validation_data=val_ds,
+        validation_data=val_dataset,
         callbacks=[es(), tb()],
         use_multiprocessing=True,
-        workers=64,
-        max_queue_size=256
+        workers=128,
+        max_queue_size=512
     )
     model.save("Xception", save_format="tf")
