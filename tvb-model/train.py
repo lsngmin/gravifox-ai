@@ -30,7 +30,7 @@ with strategy.scope():
     model.fit(
         train,
         epochs=EPOCHS,
-        batch_size=BATCH_SIZE,
+        batch_size=128,
         validation_data=validation,
         callbacks=[es(), tb()],
         use_multiprocessing=True,
