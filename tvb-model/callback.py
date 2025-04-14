@@ -1,4 +1,4 @@
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, TensorBoard
+from tf_keras.callbacks import EarlyStopping, ReduceLROnPlateau, TensorBoard
 from config import *
 
 def es():

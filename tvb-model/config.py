@@ -7,7 +7,7 @@ TEST_DIR = "Dataset/Test/"
 # data_loader.py config setting
 BATCH_SIZE = 128
 IMG_SIZE = (256, 256)
-EPOCHS = 20
+EPOCHS = 1
 CLASS_MODE = 'binary'
 
 # data_loader.py Image Aug

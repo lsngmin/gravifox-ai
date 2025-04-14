@@ -1,9 +1,9 @@
-from tensorflow.keras.applications import Xception
-from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Dropout
-from tensorflow.keras.models import Model
-from tensorflow.keras.optimizers.schedules import CosineDecay
+from tf_keras.applications import Xception
+from tf_keras.layers import GlobalAveragePooling2D, Dense, Dropout
+from tf_keras.models import Model
+from tf_keras.optimizers.schedules import CosineDecay
 import tensorflow as tf
-from tensorflow.keras.regularizers import l2
+from tf_keras.regularizers import l2
 from config import *
 
 def build_xception():

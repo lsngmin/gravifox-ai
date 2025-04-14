@@ -1,4 +1,4 @@
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tf_keras.preprocessing.image import ImageDataGenerator
 from config import *
 
 def get_data_generators():
