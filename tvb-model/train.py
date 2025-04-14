@@ -5,8 +5,6 @@ from data_loader import get_data_generators
 from model import build_xception
 from config import *
 
-tf.config.threading.set_intra_op_parallelism_threads(32)
-tf.config.threading.set_inter_op_parallelism_threads(16)
 gpus = tf.config.list_physical_devices("GPU")
 if gpus:
     try:
@@ -25,18 +23,16 @@ with strategy.scope():
     policy = mixed_precision.Policy('mixed_float16')
     mixed_precision.set_global_policy(policy)
 
-    train, validation = get_data_generators()
-
-
+    train_ds, val_ds = get_data_generators()
 
     model.fit(
-        train,
+        train_ds,
         epochs=EPOCHS,
         batch_size=BATCH_SIZE,
-        validation_data=validation,
+        validation_data=val_ds,
         callbacks=[es(), tb()],
         use_multiprocessing=True,
-        workers=32,
-        max_queue_size=2560
+        workers=64,
+        max_queue_size=256
     )
     model.save("Xception", save_format="tf")
