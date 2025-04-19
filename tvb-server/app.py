@@ -8,6 +8,8 @@ from PIL import Image
 import io
 import numpy as np
 import tensorflow as tf
+import time
+from datetime import datetime
 
 app = FastAPI()
 class Data(BaseModel):
@@ -25,23 +27,26 @@ def predict_image(image: Image.Image):
     prediction = model.predict(img_array)
     return prediction
 
-@app.post("/receive_data")
-async def receive_data(data: Data):
-    print(f"Received data: {data}")
-    return {"received_message": data.message}
-
-
 @app.post("/upload/")
 async def upload_image(file: UploadFile = File(...)):
+
     image_data = await file.read()
     image = Image.open(io.BytesIO(image_data))
 
+    start_time = time.time()
     prediction = predict_image(image)
-    predicted_class = np.argmax(prediction, axis=1)[0]
+    end_time = time.time()
 
-    return JSONResponse(content={"predicted_class": int(predicted_class)})
-    # return {"received_message": "good"}
-
+    analyzeResult = JSONResponse(content=
+    {
+    "timestamp": datetime.now().timestamp(),
+    "used_model": "Xception",
+    "image_uuid" : file.filename,
+    "prediction_time": round(end_time - start_time, 2),
+    "predicted_probability": round(prediction[0].tolist()[0], 4),
+    "predicted_class": "Real" if prediction[0].tolist()[0]>0.5 else "Fake",
+})
+    return analyzeResult
 @app.get("/")
 async  def index():
     return {"received_message": "Hello World"}
