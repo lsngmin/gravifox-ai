@@ -17,7 +17,7 @@ def _load_env_file():
         env_paths = [Path(explicit_path)]
     else:
         # 2) 환경 이름 기반 파일 선택 (spring profile 유사)
-        profile = os.environ.get("TVB_ENV", "local").lower()
+        profile = os.environ.get("TVB_ENV", "prod").lower()
         env_paths = [
             root_dir / f".env.{profile}",
             root_dir / ".env",  # fallback 공통 설정
