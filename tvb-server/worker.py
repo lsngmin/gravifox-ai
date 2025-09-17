@@ -16,7 +16,8 @@ from scrfd.video_infer import run_media
 from scrfd.pipeline.config import (
     DET_ONNX_PATH, CLS_ONNX_PATH, DET_ONNX_PROVIDERS, CLS_ONNX_PROVIDERS,
     CONF, FPS, CLIP_LEN, CLIP_STRIDE,
-    ALIGN, LAYOUT, RGB, MEAN, STD, THRESHOLD, HIGH_CONF, SPECTRAL_R0, POSE_DELTA_OUTLIER
+    ALIGN, LAYOUT, RGB, MEAN, STD, THRESHOLD, HIGH_CONF, SPECTRAL_R0, POSE_DELTA_OUTLIER,
+    create_onnx_session,
 )
 
 _DET_SESS: Optional[ort.InferenceSession] = None
@@ -25,11 +26,9 @@ _CLS_SESS: Optional[ort.InferenceSession] = None
 def _get_onnx_sessions():
     global _DET_SESS, _CLS_SESS
     if _DET_SESS is None:
-        _DET_SESS = ort.InferenceSession(DET_ONNX_PATH, providers=DET_ONNX_PROVIDERS)
-        log_session_info("detector", DET_ONNX_PATH, DET_ONNX_PROVIDERS, _DET_SESS)
+        _DET_SESS = create_onnx_session("detector", DET_ONNX_PATH, DET_ONNX_PROVIDERS)
     if _CLS_SESS is None:
-        _CLS_SESS = ort.InferenceSession(CLS_ONNX_PATH, providers=CLS_ONNX_PROVIDERS)
-        log_session_info("classifier", CLS_ONNX_PATH, CLS_ONNX_PROVIDERS, _CLS_SESS)
+        _CLS_SESS = create_onnx_session("classifier", CLS_ONNX_PATH, CLS_ONNX_PROVIDERS)
     return _DET_SESS, _CLS_SESS
 
 # ---- Image analysis (Keras) ----

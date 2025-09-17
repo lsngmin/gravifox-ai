@@ -17,7 +17,7 @@ def _load_env_file():
         env_paths = [Path(explicit_path)]
     else:
         # 2) 환경 이름 기반 파일 선택 (spring profile 유사)
-        profile = os.environ.get("TVB_ENV", "prod").lower()
+        profile = os.environ.get("TVB_ENV", "local").lower()
         env_paths = [
             root_dir / f".env.{profile}",
             root_dir / ".env",  # fallback 공통 설정
@@ -85,6 +85,33 @@ def log_session_info(label: str, path: str, requested: List[str], session: "ort.
         f"[ONNX][{label}] path={path} requested={requested} active={active}",
         flush=True,
     )
+
+
+def create_onnx_session(label: str, path: str, providers: List[str]):
+    """요청한 provider로 세션을 만들고 실패 시 CPU로 폴백."""
+    import onnxruntime as ort
+
+    requested = list(providers or []) or ["CPUExecutionProvider"]
+    try:
+        sess = ort.InferenceSession(path, providers=requested)
+        log_session_info(label, path, requested, sess)
+        return sess
+    except Exception as exc:
+        print(
+            f"[ONNX][{label}] failed for providers={requested}: {exc}",
+            flush=True,
+        )
+        if "CPUExecutionProvider" in requested and len(requested) == 1:
+            raise
+        fallback = [p for p in requested if p == "CPUExecutionProvider"]
+        if not fallback:
+            fallback = requested + ["CPUExecutionProvider"]
+        try:
+            sess = ort.InferenceSession(path, providers=fallback)
+            log_session_info(f"{label}-fallback", path, fallback, sess)
+            return sess
+        except Exception:
+            raise
 
 
 VIDEO_PATH = os.environ.get('TVB_SAMPLE_VIDEO', '/Users/sngmin/gravifox/tvb-ai/sample.mp4')
