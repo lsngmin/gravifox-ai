@@ -1,14 +1,12 @@
 import asyncio
 import json
-import os
 import aio_pika
 
-RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://admin:admin@localhost:5672/")
-EXCHANGE_NAME = os.environ.get("ANALYZE_EXCHANGE", "analyze.exchange")
+from mq import RABBITMQ_URL, EXCHANGE_NAME, build_connect_kwargs
 
 
 async def main(job_id: str, upload_id: str):
-    conn = await aio_pika.connect_robust(RABBITMQ_URL)
+    conn = await aio_pika.connect_robust(RABBITMQ_URL, **build_connect_kwargs())
     chan = await conn.channel()
     ex = await chan.declare_exchange(EXCHANGE_NAME, aio_pika.ExchangeType.TOPIC, durable=True)
     payload = {"jobId": job_id, "uploadId": upload_id}
