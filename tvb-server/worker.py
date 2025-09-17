@@ -14,7 +14,8 @@ FILE_STORE_ROOT = Path(os.environ.get("FILE_STORE_ROOT", "/tmp/uploads"))
 import onnxruntime as ort
 from scrfd.video_infer import run_media
 from scrfd.pipeline.config import (
-    DET_ONNX_PATH, CLS_ONNX_PATH, CONF, FPS, CLIP_LEN, CLIP_STRIDE,
+    DET_ONNX_PATH, CLS_ONNX_PATH, DET_ONNX_PROVIDERS, CLS_ONNX_PROVIDERS,
+    CONF, FPS, CLIP_LEN, CLIP_STRIDE,
     ALIGN, LAYOUT, RGB, MEAN, STD, THRESHOLD, HIGH_CONF, SPECTRAL_R0, POSE_DELTA_OUTLIER
 )
 
@@ -24,9 +25,9 @@ _CLS_SESS: Optional[ort.InferenceSession] = None
 def _get_onnx_sessions():
     global _DET_SESS, _CLS_SESS
     if _DET_SESS is None:
-        _DET_SESS = ort.InferenceSession(DET_ONNX_PATH, providers=["CPUExecutionProvider"])  # TODO: EP via env
+        _DET_SESS = ort.InferenceSession(DET_ONNX_PATH, providers=DET_ONNX_PROVIDERS)
     if _CLS_SESS is None:
-        _CLS_SESS = ort.InferenceSession(CLS_ONNX_PATH, providers=["CPUExecutionProvider"])  # TODO: EP via env
+        _CLS_SESS = ort.InferenceSession(CLS_ONNX_PATH, providers=CLS_ONNX_PROVIDERS)
     return _DET_SESS, _CLS_SESS
 
 # ---- Image analysis (Keras) ----

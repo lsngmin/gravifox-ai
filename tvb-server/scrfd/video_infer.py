@@ -395,8 +395,8 @@ from .pipeline.config import *
 
 def main():
     # sessions
-    det_sess = ort.InferenceSession(DET_ONNX_PATH, providers=["CPUExecutionProvider"])  # change EP if needed
-    cls_sess = ort.InferenceSession(CLS_ONNX_PATH, providers=["CPUExecutionProvider"])
+    det_sess = ort.InferenceSession(DET_ONNX_PATH, providers=DET_ONNX_PROVIDERS)
+    cls_sess = ort.InferenceSession(CLS_ONNX_PATH, providers=CLS_ONNX_PROVIDERS)
 
     result = run_video(
         video_path=VIDEO_PATH,

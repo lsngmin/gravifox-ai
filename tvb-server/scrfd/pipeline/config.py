@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import List
 
 
 def _load_env_file():
@@ -51,6 +52,12 @@ def _resolve_model_path(env_key: str, default: str) -> str:
     return str(Path(candidate).expanduser())
 
 
+def _resolve_providers(specific_key: str, fallback_key: str, default: str) -> List[str]:
+    """쉼표 구분 provider 문자열을 리스트로 변환."""
+    raw = os.environ.get(specific_key) or os.environ.get(fallback_key) or default
+    return [token.strip() for token in raw.split(',') if token.strip()]
+
+
 # ---- 얼굴 검출/판별 모델 경로 ----
 DEFAULT_DETECTOR_ONNX = \
     "/Users/sngmin/.cache/huggingface/hub/models--ykk648--face_lib/blobs/a3562ef62592bf387f6ef19151282ac127518e51c77696e62e0661bee95ba1ad"
@@ -59,6 +66,13 @@ DEFAULT_CLASSIFIER_ONNX = \
 
 DET_ONNX_PATH = _resolve_model_path("TVB_DETECTOR_ONNX", DEFAULT_DETECTOR_ONNX)
 CLS_ONNX_PATH = _resolve_model_path("TVB_CLASSIFIER_ONNX", DEFAULT_CLASSIFIER_ONNX)
+
+DET_ONNX_PROVIDERS = _resolve_providers(
+    "TVB_DETECTOR_PROVIDERS", "TVB_ONNX_PROVIDERS", "CPUExecutionProvider"
+)
+CLS_ONNX_PROVIDERS = _resolve_providers(
+    "TVB_CLASSIFIER_PROVIDERS", "TVB_ONNX_PROVIDERS", "CPUExecutionProvider"
+)
 
 VIDEO_PATH = os.environ.get('TVB_SAMPLE_VIDEO', '/Users/sngmin/gravifox/tvb-ai/sample.mp4')
 CONF = 0.35
