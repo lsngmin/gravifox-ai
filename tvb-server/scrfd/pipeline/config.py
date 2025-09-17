@@ -1,10 +1,66 @@
-# ---- 얼굴 검출 모델 파일 위치 ----
+import os
+from pathlib import Path
+
+
+def _load_env_file():
+    """
+    활성화된 환경(LOCAL/PROD 등)에 맞춰 .env.{env} 파일을 읽어 환경 변수를 설정한다.
+    우선순위: TVB_ENV_FILE > TVB_ENV > 기본(local).
+    """
+
+    root_dir = Path(__file__).resolve().parents[3]
+
+    # 1) 명시적으로 파일 경로가 주어졌다면 그 파일을 사용
+    explicit_path = os.environ.get("TVB_ENV_FILE")
+    if explicit_path:
+        env_paths = [Path(explicit_path)]
+    else:
+        # 2) 환경 이름 기반 파일 선택 (spring profile 유사)
+        profile = os.environ.get("TVB_ENV", "local").lower()
+        env_paths = [
+            root_dir / f".env.{profile}",
+            root_dir / ".env",  # fallback 공통 설정
+        ]
+
+    for env_path in env_paths:
+        if not env_path.exists():
+            continue
+        try:
+            for raw in env_path.read_text().splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key:
+                    continue
+                value = value.strip().strip('"').strip("'")
+                os.environ.setdefault(key, value)
+        except Exception:
+            pass
+
+
+_load_env_file()
+
+
+def _resolve_model_path(env_key: str, default: str) -> str:
+    """환경 변수 우선, 없으면 기본 경로 사용."""
+    candidate = os.environ.get(env_key, default)
+    return str(Path(candidate).expanduser())
+
+
+# ---- 얼굴 검출/판별 모델 경로 ----
 DEFAULT_DETECTOR_ONNX = \
     "/Users/sngmin/.cache/huggingface/hub/models--ykk648--face_lib/blobs/a3562ef62592bf387f6ef19151282ac127518e51c77696e62e0661bee95ba1ad"
+DEFAULT_CLASSIFIER_ONNX = \
+    "/Users/sngmin/.cache/huggingface/hub/models--prithivMLmods--Deepfake-Detection-Exp-02-22-ONNX/blobs/5b871f08a20f4543be3cec99eac74165821b6dc8f1b447c92391868e5d4f37b6"
 
-VIDEO_PATH = '/Users/sngmin/gravifox/tvb-ai/sample.mp4'
-DET_ONNX_PATH = DEFAULT_DETECTOR_ONNX
-CLS_ONNX_PATH = '/Users/sngmin/.cache/huggingface/hub/models--prithivMLmods--Deepfake-Detection-Exp-02-22-ONNX/blobs/5b871f08a20f4543be3cec99eac74165821b6dc8f1b447c92391868e5d4f37b6'
+DET_ONNX_PATH = _resolve_model_path("TVB_DETECTOR_ONNX", DEFAULT_DETECTOR_ONNX)
+CLS_ONNX_PATH = _resolve_model_path("TVB_CLASSIFIER_ONNX", DEFAULT_CLASSIFIER_ONNX)
+
+VIDEO_PATH = os.environ.get('TVB_SAMPLE_VIDEO', '/Users/sngmin/gravifox/tvb-ai/sample.mp4')
 CONF = 0.35
 FPS = 30
 CLIP_LEN = 1
