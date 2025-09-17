@@ -74,6 +74,19 @@ CLS_ONNX_PROVIDERS = _resolve_providers(
     "TVB_CLASSIFIER_PROVIDERS", "TVB_ONNX_PROVIDERS", "CPUExecutionProvider"
 )
 
+
+def log_session_info(label: str, path: str, requested: List[str], session: "ort.InferenceSession") -> None:
+    """주요 세션 정보를 콘솔로 출력."""
+    try:
+        active = session.get_providers()
+    except Exception as exc:  # pragma: no cover - debug helper
+        active = f"error: {exc}"
+    print(
+        f"[ONNX][{label}] path={path} requested={requested} active={active}",
+        flush=True,
+    )
+
+
 VIDEO_PATH = os.environ.get('TVB_SAMPLE_VIDEO', '/Users/sngmin/gravifox/tvb-ai/sample.mp4')
 CONF = 0.35
 FPS = 30

@@ -81,7 +81,9 @@ def predict_image(image: Image.Image):
 @app.post("/predeict/video/")
 async def predict_video():
     det_sess = ort.InferenceSession(DET_ONNX_PATH, providers=DET_ONNX_PROVIDERS)
+    log_session_info("detector", DET_ONNX_PATH, DET_ONNX_PROVIDERS, det_sess)
     cls_sess = ort.InferenceSession(CLS_ONNX_PATH, providers=CLS_ONNX_PROVIDERS)
+    log_session_info("classifier", CLS_ONNX_PATH, CLS_ONNX_PROVIDERS, cls_sess)
 
     result = run_video(
         video_path=VIDEO_PATH,

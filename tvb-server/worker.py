@@ -26,8 +26,10 @@ def _get_onnx_sessions():
     global _DET_SESS, _CLS_SESS
     if _DET_SESS is None:
         _DET_SESS = ort.InferenceSession(DET_ONNX_PATH, providers=DET_ONNX_PROVIDERS)
+        log_session_info("detector", DET_ONNX_PATH, DET_ONNX_PROVIDERS, _DET_SESS)
     if _CLS_SESS is None:
         _CLS_SESS = ort.InferenceSession(CLS_ONNX_PATH, providers=CLS_ONNX_PROVIDERS)
+        log_session_info("classifier", CLS_ONNX_PATH, CLS_ONNX_PROVIDERS, _CLS_SESS)
     return _DET_SESS, _CLS_SESS
 
 # ---- Image analysis (Keras) ----
