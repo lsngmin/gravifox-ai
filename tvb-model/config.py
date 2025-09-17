@@ -21,7 +21,7 @@ HORIZONTAL_FLIP = True
 BRIGHTNESS_RANGE = [0.5, 1.5]
 FILL_MODE = 'nearest'
 
-# model.py config setting
+# bnkps.py config setting
 XCEPTION_MODEL_WEIGHT = 'imagenet'
 XCEPTION_MODEL_INCLUDE_TOP = False
 XCEPTION_MODEL_INPUT_SHAPE = (256, 256, 3)
