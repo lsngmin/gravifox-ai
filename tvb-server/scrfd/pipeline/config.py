@@ -174,3 +174,6 @@ except Exception:
 
 MIN_FACE = float(os.environ.get('TVB_MIN_FACE', '0'))  # px
 MIN_DET_SCORE = float(os.environ.get('TVB_MIN_DET_SCORE', '0'))
+
+# Test-time augmentation
+TTA_FLIP = _env_flag('TVB_TTA_FLIP', False)

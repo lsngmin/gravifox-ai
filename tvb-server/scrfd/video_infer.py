@@ -188,9 +188,17 @@ def run_video(
             # If Torch is not available, force frame-mode even when clip_len>1 (ONNX expects 4D input)
             if clip_len <= 1 or torch_runner is None:
                 iname = input_name or cls_sess.get_inputs()[0].name
+                from .pipeline.config import TTA_FLIP as _TTA
                 if torch_runner is not None:
                     _, probs_all = torch_runner.infer_clip([aligned], size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
-                    fake_prob = float(probs_all[_FAKE_IDX_IMAGE_CFG]) if len(probs_all) > _FAKE_IDX_IMAGE_CFG else float(probs_all[0])
+                    p0 = float(probs_all[_FAKE_IDX_IMAGE_CFG]) if len(probs_all) > _FAKE_IDX_IMAGE_CFG else float(probs_all[0])
+                    if _TTA:
+                        aligned_fl = cv2.flip(aligned, 1)
+                        _, probs_fl = torch_runner.infer_clip([aligned_fl], size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
+                        p1 = float(probs_fl[_FAKE_IDX_IMAGE_CFG]) if len(probs_fl) > _FAKE_IDX_IMAGE_CFG else float(probs_fl[0])
+                        fake_prob = 0.5 * (p0 + p1)
+                    else:
+                        fake_prob = p0
                 else:
                     inp = preprocess_image(
                         aligned,
@@ -205,6 +213,16 @@ def run_video(
                     logits = cls_sess.run(None, {iname: inp})[0]  # (1,2)
                     pr = softmax(logits, axis=-1)
                     fake_prob = float(pr[0, _FAKE_IDX_IMAGE_CFG])
+                    if _TTA:
+                        aligned_fl = cv2.flip(aligned, 1)
+                        inp_fl = preprocess_image(aligned_fl, size=align_size, rgb=rgb, mean=mean, std=std)
+                        if inp_fl.ndim == 5:
+                            N, T, C, H, W = inp_fl.shape
+                            inp_fl = inp_fl.reshape(N * T, C, H, W)
+                        logits_fl = cls_sess.run(None, {iname: inp_fl})[0]
+                        pr_fl = softmax(logits_fl, axis=-1)
+                        p1 = float(pr_fl[0, _FAKE_IDX_IMAGE_CFG])
+                        fake_prob = 0.5 * (fake_prob + p1)
                 # gating by face size / det score
                 from .pipeline.config import MIN_FACE as _MIN_FACE, MIN_DET_SCORE as _MIN_S
                 _sz = face_sizes[-1] if len(face_sizes) else None
@@ -222,9 +240,17 @@ def run_video(
         # Only run temporal clip-mode when the model expects 5D (clip_len > 1).
         # For image models (clip_len <= 1), skip this path to avoid feeding 5D to 4D inputs.
         if clip_len > 1 and torch_runner is not None and len(buffer) == clip_len and ((sampled % clip_stride) == 0):
+            from .pipeline.config import TTA_FLIP as _TTA
             if torch_runner is not None:
                 _, probs_all = torch_runner.infer_clip(list(buffer), size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
-                fake_prob = float(probs_all[_FAKE_IDX_CLIP_CFG]) if len(probs_all) > _FAKE_IDX_CLIP_CFG else float(probs_all[0])
+                p0 = float(probs_all[_FAKE_IDX_CLIP_CFG]) if len(probs_all) > _FAKE_IDX_CLIP_CFG else float(probs_all[0])
+                if _TTA:
+                    buf_fl = [cv2.flip(f, 1) for f in list(buffer)]
+                    _, probs_fl = torch_runner.infer_clip(buf_fl, size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
+                    p1 = float(probs_fl[_FAKE_IDX_CLIP_CFG]) if len(probs_fl) > _FAKE_IDX_CLIP_CFG else float(probs_fl[0])
+                    fake_prob = 0.5 * (p0 + p1)
+                else:
+                    fake_prob = p0
             else:
                 inp = preprocess_frames(list(buffer), size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
                 iname = input_name or cls_sess.get_inputs()[0].name
