@@ -44,9 +44,9 @@ def run_video(
         )
         if CLASSIFIER_BACKEND == 'torch':
             try:
-                from ..mintime_runner import TorchClassifierRunner
+                from mintime_runner import TorchClassifierRunner
                 from pathlib import Path as _P
-                _root = _P(__file__).resolve().parents[2]  # tvb-server root
+                _root = _P(__file__).resolve().parents[1]  # tvb-server root
                 ext_ckpt = TORCH_EXTRACTOR_CKPT or str(_root / 'MINTIME_XC_Extractor_checkpoint30')
                 cls_ckpt = TORCH_MODEL_CKPT or str(_root / 'MINTIME_XC_Model_checkpoint30')
                 torch_runner = TorchClassifierRunner(
@@ -62,6 +62,15 @@ def run_video(
                 torch_runner = None
     except Exception:
         torch_runner = None
+
+    # If torch backend is requested but torch runner failed and no ONNX classifier session provided,
+    # build an ONNX session as fallback to avoid NoneType errors.
+    if torch_runner is None and cls_sess is None:
+        try:
+            from .pipeline.config import CLS_ONNX_PATH, CLS_ONNX_PROVIDERS, create_onnx_session as _mk
+            cls_sess = _mk("classifier-fallback", CLS_ONNX_PATH, CLS_ONNX_PROVIDERS)
+        except Exception as _e:
+            print(f"[ONNX][classifier] fallback create failed: {_e}")
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"failed to open video: {video_path}")

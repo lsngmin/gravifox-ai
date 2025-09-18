@@ -81,10 +81,8 @@ def predict_image(image: Image.Image):
 @app.post("/predeict/video/")
 async def predict_video():
     det_sess = create_onnx_session("detector", DET_ONNX_PATH, DET_ONNX_PROVIDERS)
-    if CLASSIFIER_BACKEND == 'torch':
-        cls_sess = None
-    else:
-        cls_sess = create_onnx_session("classifier", CLS_ONNX_PATH, CLS_ONNX_PROVIDERS)
+    # Always prepare ONNX classifier session so that Torch backend can fall back safely
+    cls_sess = create_onnx_session("classifier", CLS_ONNX_PATH, CLS_ONNX_PROVIDERS)
 
     result = run_video(
         video_path=VIDEO_PATH,
