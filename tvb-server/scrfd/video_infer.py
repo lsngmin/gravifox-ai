@@ -33,6 +33,35 @@ def run_video(
     """Detect → align (in-memory) → frame or clip classify → aggregate & evidence.
     If clip_len <= 1, runs per-frame classification (image ONNX)."""
     detector = SCRFDDetector(session=det_sess)
+
+    # Optional Torch backend for classifier
+    torch_runner = None
+    try:
+        from .pipeline.config import (
+            CLASSIFIER_BACKEND, TORCH_EXTRACTOR_CKPT, TORCH_MODEL_CKPT, TORCH_DEVICE,
+            FAKE_IDX_IMAGE as _FAKE_IDX_IMAGE_CFG,
+            FAKE_IDX_CLIP as _FAKE_IDX_CLIP_CFG,
+        )
+        if CLASSIFIER_BACKEND == 'torch':
+            try:
+                from ..mintime_runner import TorchClassifierRunner
+                from pathlib import Path as _P
+                _root = _P(__file__).resolve().parents[2]  # tvb-server root
+                ext_ckpt = TORCH_EXTRACTOR_CKPT or str(_root / 'MINTIME_XC_Extractor_checkpoint30')
+                cls_ckpt = TORCH_MODEL_CKPT or str(_root / 'MINTIME_XC_Model_checkpoint30')
+                torch_runner = TorchClassifierRunner(
+                    extractor_ckpt=ext_ckpt,
+                    model_ckpt=cls_ckpt,
+                    device=TORCH_DEVICE,
+                    rgb=rgb,
+                    mean=mean,
+                    std=std,
+                )
+            except Exception as _e:  # fallback to ONNX
+                print(f"[TorchBackend] disabled due to error: {_e}")
+                torch_runner = None
+    except Exception:
+        torch_runner = None
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"failed to open video: {video_path}")
@@ -49,6 +78,8 @@ def run_video(
     spectral_vals: List[float] = []
     lm_jitters: List[float] = []
     pose_deltas: List[Tuple[float, float, float]] = []
+    det_scores: List[float] = []
+    face_sizes: List[float] = []
 
     prev_kps: Optional[np.ndarray] = None
     prev_pose: Optional[Tuple[float, float, float]] = None
@@ -95,6 +126,10 @@ def run_video(
         # -------- 2) build aligned face (kps → warp; else bbox crop) --------
         if det is not None and len(det) > 0:
             x1, y1, x2, y2, _ = det[0]
+            try:
+                det_scores.append(float(det[0,4]))
+            except Exception:
+                pass
             h, w = frame.shape[:2]
             x1 = int(max(0, min(w - 1, x1)))
             y1 = int(max(0, min(h - 1, y1)))
@@ -111,6 +146,8 @@ def run_video(
                 crop = frame[yy1:yy2, xx1:xx2]
                 if crop.size > 0:
                     aligned = cv2.resize(crop, (align_size, align_size))
+            if bbox_size is not None:
+                face_sizes.append(float(bbox_size))
 
         # -------- 2.5) evidence hooks (only when we have kps/aligned) --------
         if aligned is not None:
@@ -139,20 +176,23 @@ def run_video(
             # -------- 3) frame-mode (image ONNX): immediate infer --------
             if clip_len <= 1:
                 iname = input_name or cls_sess.get_inputs()[0].name
-                inp = preprocess_image(
-                    aligned,
-                    size=align_size,
-                    rgb=rgb,
-                    mean=mean,
-                    std=std,
-                )  # (1,3,H,W)
-                if inp.ndim == 5:
-                    N, T, C, H, W = inp.shape
-                    inp = inp.reshape(N * T, C, H, W)
-                logits = cls_sess.run(None, {iname: inp})[0]  # (1,2)
-                pr = softmax(logits, axis=-1)
-                # default mapping: {0:'Deepfake', 1:'Real'} → fake = index 0
-                fake_prob = float(pr[0, 0])
+                if torch_runner is not None:
+                    _, probs_all = torch_runner.infer_clip([aligned], size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
+                    fake_prob = float(probs_all[_FAKE_IDX_IMAGE_CFG]) if len(probs_all) > _FAKE_IDX_IMAGE_CFG else float(probs_all[0])
+                else:
+                    inp = preprocess_image(
+                        aligned,
+                        size=align_size,
+                        rgb=rgb,
+                        mean=mean,
+                        std=std,
+                    )  # (1,3,H,W)
+                    if inp.ndim == 5:
+                        N, T, C, H, W = inp.shape
+                        inp = inp.reshape(N * T, C, H, W)
+                    logits = cls_sess.run(None, {iname: inp})[0]  # (1,2)
+                    pr = softmax(logits, axis=-1)
+                    fake_prob = float(pr[0, _FAKE_IDX_IMAGE_CFG])
                 probs.append(fake_prob)
                 prob_series.append(fake_prob)
                 infer_cnt += 1
@@ -164,12 +204,15 @@ def run_video(
         # Only run temporal clip-mode when the model expects 5D (clip_len > 1).
         # For image models (clip_len <= 1), skip this path to avoid feeding 5D to 4D inputs.
         if clip_len > 1 and len(buffer) == clip_len and ((sampled % clip_stride) == 0):
-            inp = preprocess_frames(list(buffer), size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
-            iname = input_name or cls_sess.get_inputs()[0].name
-            out = cls_sess.run(None, {iname: inp})
-            pr = softmax(out[0], axis=-1)
-            # assumption for temporal model: index 1 = fake (adjust if needed)
-            fake_prob = float(pr[0, 1])
+            if torch_runner is not None:
+                _, probs_all = torch_runner.infer_clip(list(buffer), size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
+                fake_prob = float(probs_all[_FAKE_IDX_CLIP_CFG]) if len(probs_all) > _FAKE_IDX_CLIP_CFG else float(probs_all[0])
+            else:
+                inp = preprocess_frames(list(buffer), size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
+                iname = input_name or cls_sess.get_inputs()[0].name
+                out = cls_sess.run(None, {iname: inp})
+                pr = softmax(out[0], axis=-1)
+                fake_prob = float(pr[0, _FAKE_IDX_CLIP_CFG])
             probs.append(fake_prob)
             prob_series.append(fake_prob)
             infer_cnt += 1
@@ -204,7 +247,25 @@ def run_video(
     mean_p = float(np.mean(probs_arr))
     std_p = float(np.std(probs_arr))
     high_conf_ratio = float(np.mean(probs_arr >= high_conf_threshold))
-    label = "FAKE" if mean_p >= verdict_threshold else "REAL"
+
+    # Aggregation options
+    from .pipeline.config import AGGREGATOR, TOPK_RATIO, SEG_THRESHOLD, SEG_MIN_LEN
+    agg_name = AGGREGATOR.lower()
+    agg_score = mean_p
+    if agg_name == 'median':
+        agg_score = float(np.median(probs_arr))
+    elif agg_name == 'topk_mean':
+        k = max(1, int(round(len(probs_arr) * TOPK_RATIO)))
+        topk = np.sort(probs_arr)[-k:]
+        agg_score = float(np.mean(topk))
+    elif agg_name == 'p95':
+        agg_score = float(np.quantile(probs_arr, 0.95))
+    elif agg_name == 'hybrid':
+        k = max(1, int(round(len(probs_arr) * TOPK_RATIO)))
+        topk = np.sort(probs_arr)[-k:]
+        agg_score = float(0.5 * mean_p + 0.5 * float(np.mean(topk)))
+
+    label = "FAKE" if agg_score >= verdict_threshold else "REAL"
 
     # stability metrics
     pose_arr = np.asarray(pose_deltas, dtype=np.float32) if len(pose_deltas) else None
@@ -225,6 +286,42 @@ def run_video(
         float(np.mean(np.asarray(spectral_vals) > 0.4)) if len(spectral_vals) else None
     )
 
+    # suspicious segments (consecutive samples >= SEG_THRESHOLD)
+    segments = []
+    if len(prob_series):
+        curr_s = None
+        for i, p in enumerate(prob_series):
+            if p >= SEG_THRESHOLD:
+                if curr_s is None:
+                    curr_s = {"start": i, "max": p}
+                else:
+                    curr_s["max"] = max(curr_s["max"], p)
+            else:
+                if curr_s is not None:
+                    curr_s["end"] = i - 1
+                    if curr_s["end"] - curr_s["start"] + 1 >= SEG_MIN_LEN:
+                        segments.append(curr_s)
+                    curr_s = None
+        if curr_s is not None:
+            curr_s["end"] = len(prob_series) - 1
+            if curr_s["end"] - curr_s["start"] + 1 >= SEG_MIN_LEN:
+                segments.append(curr_s)
+
+    # quantiles and exemplars
+    q50 = float(np.quantile(probs_arr, 0.5))
+    q75 = float(np.quantile(probs_arr, 0.75))
+    q90 = float(np.quantile(probs_arr, 0.9))
+    q95 = float(np.quantile(probs_arr, 0.95))
+    top_n = min(10, len(prob_series))
+    top_idx = np.argsort(probs_arr)[-top_n:][::-1].tolist()
+    exemplars = [{"idx": int(i), "prob": float(probs_arr[i])} for i in top_idx]
+
+    # timing conversion for segments (seconds)
+    if sample_fps and sample_fps > 0:
+        for seg in segments:
+            seg["start_sec"] = round(seg["start"] / sample_fps, 2)
+            seg["end_sec"] = round(seg["end"] / sample_fps, 2)
+
     return {
         "ok": True,
         "clips": int(len(probs)),
@@ -233,6 +330,7 @@ def run_video(
         "high_conf_ratio": round(high_conf_ratio, 4),
         "threshold": verdict_threshold,
         "label": label,
+        "agg": {"name": agg_name, "score": round(agg_score, 4)},
         "latency_sec": round(time.time() - t0, 2),
         "sample_fps": sample_fps,
         "clip_len": clip_len,
@@ -242,6 +340,9 @@ def run_video(
         "frames_total": total,
         # timeline/evidence
         "probs_timeline": [round(float(x), 4) for x in prob_series],
+        "quantiles": {"p50": round(q50, 4), "p75": round(q75, 4), "p90": round(q90, 4), "p95": round(q95, 4), "max": round(float(np.max(probs_arr)), 4)},
+        "exemplars": exemplars,
+        "segments": segments,
         "stability": {
             "lm_jitter_rms": lm_jitter_rms,
             "pose_delta_mean": pose_delta_mean,
@@ -252,6 +353,16 @@ def run_video(
             "outlier_ratio": spectral_outlier_ratio,
             "r0_ratio": spectral_r0,
         },
+        "faces": {
+            "size_mean": (float(np.mean(face_sizes)) if len(face_sizes) else None),
+            "size_min": (float(np.min(face_sizes)) if len(face_sizes) else None),
+            "size_max": (float(np.max(face_sizes)) if len(face_sizes) else None),
+            "det_score_mean": (float(np.mean(det_scores)) if len(det_scores) else None),
+        },
+        "runtime": {
+            "det_providers": getattr(det_sess, 'get_providers', lambda: [])(),
+            "cls_providers": getattr(cls_sess, 'get_providers', lambda: [])(),
+        }
     }
 
 def run_image(
@@ -351,6 +462,10 @@ def run_image(
         float(np.mean(np.asarray(spectral_vals) > 0.4)) if len(spectral_vals) else None
     )
 
+    # simple quantiles/exemplars for single frame
+    q50 = float(np.quantile(probs_arr, 0.5))
+    exemplars = [{"idx": 0, "prob": float(fake_prob)}]
+
     return {
         "ok": True,
         "clips": 1,
@@ -359,6 +474,7 @@ def run_image(
         "high_conf_ratio": round(high_conf_ratio, 4),
         "threshold": verdict_threshold,
         "label": label,
+        "agg": {"name": "mean", "score": round(mean_p, 4)},
         "latency_sec": round(time.time() - t0, 2),
         "sample_fps": None,
         "clip_len": 1,
@@ -367,6 +483,9 @@ def run_image(
         "infer_cnt": 1,
         "frames_total": 1,
         "probs_timeline": [round(float(fake_prob), 4)],
+        "quantiles": {"p50": round(q50, 4), "max": round(float(fake_prob), 4)},
+        "exemplars": exemplars,
+        "segments": [{"start": 0, "end": 0, "max": float(fake_prob)}] if fake_prob >= verdict_threshold else [],
         "stability": {
             "lm_jitter_rms": lm_jitter_rms,
             "pose_delta_mean": pose_delta_mean,
@@ -377,6 +496,14 @@ def run_image(
             "outlier_ratio": spectral_outlier_ratio,
             "r0_ratio": spectral_r0,
         },
+        "faces": {
+            "size_mean": (float(bbox_size) if bbox_size is not None else None),
+            "det_score_mean": (float(det[0,4]) if det is not None and len(det)>0 else None),
+        },
+        "runtime": {
+            "det_providers": getattr(det_sess, 'get_providers', lambda: [])(),
+            "cls_providers": getattr(cls_sess, 'get_providers', lambda: [])(),
+        }
     }
 
 def run_media(

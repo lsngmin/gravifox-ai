@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 
 def _load_env_file():
@@ -56,6 +56,18 @@ def _resolve_providers(specific_key: str, fallback_key: str, default: str) -> Li
     """쉼표 구분 provider 문자열을 리스트로 변환."""
     raw = os.environ.get(specific_key) or os.environ.get(fallback_key) or default
     return [token.strip() for token in raw.split(',') if token.strip()]
+
+
+def _env_flag(name: str, default: Optional[bool] = None) -> Optional[bool]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    v = raw.strip().lower()
+    if v in {"1", "true", "yes", "on"}:
+        return True
+    if v in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 # ---- 얼굴 검출/판별 모델 경로 ----
@@ -117,14 +129,31 @@ def create_onnx_session(label: str, path: str, providers: List[str]):
 VIDEO_PATH = os.environ.get('TVB_SAMPLE_VIDEO', '/Users/sngmin/gravifox/tvb-ai/sample.mp4')
 CONF = 0.35
 FPS = 30
-CLIP_LEN = 1
-CLIP_STRIDE = 1
-ALIGN = 224
+CLIP_LEN = int(os.environ.get('TVB_CLIP_LEN', '1'))
+CLIP_STRIDE = int(os.environ.get('TVB_CLIP_STRIDE', '1'))
+ALIGN = int(os.environ.get('TVB_ALIGN', '224'))
 LAYOUT = 'NCTHW'
 RGB= True
 MEAN=[0.485, 0.456, 0.406]
 STD=[0.229, 0.224, 0.225]
-THRESHOLD=0.6
-HIGH_CONF=0.8
+THRESHOLD=float(os.environ.get('TVB_THRESHOLD', '0.6'))
+HIGH_CONF=float(os.environ.get('TVB_HIGH_CONF', '0.8'))
 SPECTRAL_R0=0.25
 POSE_DELTA_OUTLIER=10
+
+# Classifier output mapping (fake class index)
+FAKE_IDX_IMAGE = int(os.environ.get('TVB_FAKE_IDX_IMAGE', '0'))
+FAKE_IDX_CLIP = int(os.environ.get('TVB_FAKE_IDX_CLIP', '1'))
+
+# Aggregation config
+AGGREGATOR = os.environ.get('TVB_AGGREGATOR', 'mean')  # mean|median|topk_mean|p95|hybrid
+TOPK_RATIO = float(os.environ.get('TVB_TOPK_RATIO', '0.2'))  # for topk_mean/hybrid
+SEG_THRESHOLD = float(os.environ.get('TVB_SEG_THRESHOLD', str(THRESHOLD)))
+SEG_MIN_LEN = int(os.environ.get('TVB_SEG_MIN_LEN', '3'))  # minimum consecutive samples
+
+# Backend toggle (onnx|torch) + Torch settings
+CLASSIFIER_BACKEND = os.environ.get('TVB_CLASSIFIER_BACKEND', 'onnx').lower()
+TORCH_EXTRACTOR_CKPT = os.environ.get('TVB_TORCH_EXTRACTOR_CKPT')
+TORCH_MODEL_CKPT = os.environ.get('TVB_TORCH_MODEL_CKPT')
+TORCH_DEVICE = os.environ.get('TVB_TORCH_DEVICE', 'cuda')
+DUAL_RUN = _env_flag('TVB_DUAL_RUN', False)
