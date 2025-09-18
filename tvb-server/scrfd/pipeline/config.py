@@ -127,7 +127,7 @@ def create_onnx_session(label: str, path: str, providers: List[str]):
 
 
 VIDEO_PATH = os.environ.get('TVB_SAMPLE_VIDEO', '/Users/sngmin/gravifox/tvb-ai/sample.mp4')
-CONF = 0.35
+CONF = float(os.environ.get('TVB_CONF', '0.35'))
 FPS = 30
 CLIP_LEN = int(os.environ.get('TVB_CLIP_LEN', '1'))
 CLIP_STRIDE = int(os.environ.get('TVB_CLIP_STRIDE', '1'))
