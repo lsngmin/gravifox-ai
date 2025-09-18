@@ -205,10 +205,15 @@ def run_video(
                     logits = cls_sess.run(None, {iname: inp})[0]  # (1,2)
                     pr = softmax(logits, axis=-1)
                     fake_prob = float(pr[0, _FAKE_IDX_IMAGE_CFG])
-                probs.append(fake_prob)
-                prob_series.append(fake_prob)
-                used_faces.append(aligned.copy())
-                infer_cnt += 1
+                # gating by face size / det score
+                from .pipeline.config import MIN_FACE as _MIN_FACE, MIN_DET_SCORE as _MIN_S
+                _sz = face_sizes[-1] if len(face_sizes) else None
+                _sc = det_scores[-1] if len(det_scores) else None
+                if ((_sz is None or _sz >= _MIN_FACE) and (_sc is None or _sc >= _MIN_S)):
+                    probs.append(fake_prob)
+                    prob_series.append(fake_prob)
+                    used_faces.append(aligned.copy())
+                    infer_cnt += 1
                 sampled += 1
                 frame_idx += 1
                 continue
@@ -226,14 +231,19 @@ def run_video(
                 out = cls_sess.run(None, {iname: inp})
                 pr = softmax(out[0], axis=-1)
                 fake_prob = float(pr[0, _FAKE_IDX_CLIP_CFG])
-            probs.append(fake_prob)
-            prob_series.append(fake_prob)
-            try:
-                center = list(buffer)[min(len(buffer)//2, len(buffer)-1)]
-                used_faces.append(center.copy())
-            except Exception:
-                pass
-            infer_cnt += 1
+            # gating for clip (use last measured size/score as proxy)
+            from .pipeline.config import MIN_FACE as _MIN_FACE, MIN_DET_SCORE as _MIN_S
+            _sz = face_sizes[-1] if len(face_sizes) else None
+            _sc = det_scores[-1] if len(det_scores) else None
+            if ((_sz is None or _sz >= _MIN_FACE) and (_sc is None or _sc >= _MIN_S)):
+                probs.append(fake_prob)
+                prob_series.append(fake_prob)
+                try:
+                    center = list(buffer)[min(len(buffer)//2, len(buffer)-1)]
+                    used_faces.append(center.copy())
+                except Exception:
+                    pass
+                infer_cnt += 1
 
         sampled += 1
         frame_idx += 1
@@ -261,6 +271,17 @@ def run_video(
             "frames_total": total,
         }
 
+    # optional EWMA smoothing before aggregation
+    from .pipeline.config import EWMA_ALPHA as _EWMA_ALPHA
+    probs_raw = list(probs)
+    if _EWMA_ALPHA is not None and 0.0 < _EWMA_ALPHA < 1.0 and len(probs) > 1:
+        sm = []
+        a = float(_EWMA_ALPHA)
+        m = float(probs[0])
+        for v in probs:
+            m = a * float(v) + (1.0 - a) * m
+            sm.append(m)
+        probs = sm
     probs_arr = np.asarray(probs, dtype=np.float32)
     mean_p = float(np.mean(probs_arr))
     std_p = float(np.std(probs_arr))
@@ -373,6 +394,7 @@ def run_video(
         "frames_total": total,
         # timeline/evidence
         "probs_timeline": [round(float(x), 4) for x in prob_series],
+        "probs_ewma": ([round(float(x), 4) for x in probs] if _EWMA_ALPHA is not None and len(probs_raw) == len(probs) else None),
         "quantiles": {"p50": round(q50, 4), "p75": round(q75, 4), "p90": round(q90, 4), "p95": round(q95, 4), "max": round(float(np.max(probs_arr)), 4)},
         "exemplars": exemplars,
         "segments": segments,

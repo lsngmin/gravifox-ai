@@ -164,3 +164,13 @@ DISABLE_ALIGN_WARP = _env_flag('TVB_DISABLE_ALIGN_WARP', False)
 
 # Attach face thumbnails in result
 ATTACH_FACES = int(os.environ.get('TVB_ATTACH_FACES', '1'))
+
+# Smoothing / gating controls (stage 2 tuning)
+try:
+    _alpha = os.environ.get('TVB_EWMA_ALPHA')
+    EWMA_ALPHA: Optional[float] = None if _alpha is None else float(_alpha)
+except Exception:
+    EWMA_ALPHA = None
+
+MIN_FACE = float(os.environ.get('TVB_MIN_FACE', '0'))  # px
+MIN_DET_SCORE = float(os.environ.get('TVB_MIN_DET_SCORE', '0'))

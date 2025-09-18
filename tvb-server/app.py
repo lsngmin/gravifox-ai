@@ -209,12 +209,29 @@ async def _on_startup():
             mq = MQ()
             await mq.connect()
 
+            # bounded concurrency (default 1)
+            max_c = int(os.environ.get("TVB_MAX_CONCURRENCY", "1"))
+            sem = asyncio.Semaphore(max(1, max_c))
+
             from typing import Dict
             async def handle_request(payload: Dict[str, Any]):
                 job_id = payload.get("jobId")
                 upload_id = payload.get("uploadId")
                 params = payload.get("params")
-                await run_analysis(mq, job_id, upload_id, params)
+
+                async def _task():
+                    async with sem:
+                        try:
+                            await run_analysis(mq, job_id, upload_id, params)
+                        except Exception as _e:
+                            try:
+                                from mq import publish_failed as _pf
+                                await _pf(mq, job_id or "", f"analysis error: {_e}", reason_code="WORKER_EXCEPTION")
+                            except Exception:
+                                pass
+
+                # schedule and return immediately (message is acked by consumer)
+                asyncio.create_task(_task())
 
             asyncio.create_task(mq.consume_requests(handle_request))
         except Exception as e:

@@ -44,6 +44,11 @@ TVB_ENV_FILE=/etc/tvb-ai/envs/edge-device.env uvicorn tvb-ai.tvb-server.app:app
 - `TVB_DUAL_RUN`: `1`이면 Torch 사용 시 에러 시 CPU/ONNX로 폴백 (내부 폴백 로직 있음)
 - `TVB_TORCH_BUILDER`: (선택) `pkg.module:build_fn` 형태. TorchScript가 아닌 state_dict 체크포인트일 때, 이 빌더가 `(extractor, classifier)` 모듈을 생성하고 우리가 `state_dict`를 로드합니다.
 
+### 튜닝(2단계) 옵션
+- `TVB_EWMA_ALPHA`: 프레임 확률 지수평활(EWMA) 알파(0~1, 예: 0.6). 지정 시 스무딩 확률로 집계 계산.
+- `TVB_MIN_FACE`: 최소 얼굴 크기(px) 미만 프레임 제외(예: 96).
+- `TVB_MIN_DET_SCORE`: 최소 검출 신뢰도 미만 프레임 제외(예: 0.6).
+
 ## MINTIME TorchScript 내보내기(추천)
 state_dict 체크포인트를 TorchScript로 변환하면 런타임에서 바로 로드됩니다.
 
@@ -93,5 +98,8 @@ FastAPI 및 워커는 `RABBITMQ_URL`과 관련 플래그를 통해 브로커에 
 - `RABBITMQ_CERT_FILE` / `RABBITMQ_KEY_FILE`: 상호 TLS가 필요할 때 클라이언트 인증서/키 경로
 - `RABBITMQ_VERIFY_PEER`: `false`로 설정하면 서버 인증서 검증을 비활성화 (기본값: 검증 활성)
 - `RABBITMQ_PREFETCH`: 소비자 채널 prefetch 값 (기본 10)
+
+## 동시 처리(Concurrency)
+- `TVB_MAX_CONCURRENCY`: 동시에 처리할 분석 작업 수(기본 1). 예: `TVB_MAX_CONCURRENCY=2`
 
 Spring Boot 측은 `SPRING_RABBITMQ_*` 환경 변수(또는 `application-*.yml`)로 동일한 엔드포인트를 바라보도록 맞춰야 합니다. 테스트 프로필을 사용할 경우 `SPRING_RABBITMQ_SSL_ENABLED=true`, `SPRING_RABBITMQ_PORT=5671`, `SPRING_RABBITMQ_TRUST_STORE=/path/to/amazon-ca.jks` 등을 함께 지정하세요.
