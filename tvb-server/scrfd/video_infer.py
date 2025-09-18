@@ -1,4 +1,4 @@
-import os, sys, time, argparse, json, cv2
+import os, sys, time, argparse, json, cv2, base64
 import numpy as np
 import onnxruntime as ort
 
@@ -82,6 +82,7 @@ def run_video(
     buffer: Deque[np.ndarray] = deque(maxlen=clip_len)
     probs: List[float] = []            # per-frame/clip fake probs
     prob_series: List[float] = []      # timeline for report
+    used_faces: List[np.ndarray] = []  # faces corresponding to each prob
 
     # evidence logs
     spectral_vals: List[float] = []
@@ -146,10 +147,11 @@ def run_video(
             y2 = int(max(0, min(h - 1, y2)))
             bbox_size = float(max(1.0, min(x2 - x1, y2 - y1)))
 
-            if kps is not None:
+            from .pipeline.config import CROP_MARGIN as _CROP_MARGIN, DISABLE_ALIGN_WARP as _DISABLE_WARP
+            if kps is not None and not _DISABLE_WARP:
                 aligned = warp_by_5pts(frame, kps, (align_size, align_size))
             else:
-                pad = int(0.12 * max(y2 - y1, x2 - x1))
+                pad = int(_CROP_MARGIN * max(y2 - y1, x2 - x1))
                 xx1 = max(0, x1 - pad); yy1 = max(0, y1 - pad)
                 xx2 = min(w, x2 + pad); yy2 = min(h, y2 + pad)
                 crop = frame[yy1:yy2, xx1:xx2]
@@ -205,6 +207,7 @@ def run_video(
                     fake_prob = float(pr[0, _FAKE_IDX_IMAGE_CFG])
                 probs.append(fake_prob)
                 prob_series.append(fake_prob)
+                used_faces.append(aligned.copy())
                 infer_cnt += 1
                 sampled += 1
                 frame_idx += 1
@@ -225,6 +228,11 @@ def run_video(
                 fake_prob = float(pr[0, _FAKE_IDX_CLIP_CFG])
             probs.append(fake_prob)
             prob_series.append(fake_prob)
+            try:
+                center = list(buffer)[min(len(buffer)//2, len(buffer)-1)]
+                used_faces.append(center.copy())
+            except Exception:
+                pass
             infer_cnt += 1
 
         sampled += 1
@@ -326,6 +334,21 @@ def run_video(
     top_idx = np.argsort(probs_arr)[-top_n:][::-1].tolist()
     exemplars = [{"idx": int(i), "prob": float(probs_arr[i])} for i in top_idx]
 
+    # attach face thumbnails (base64)
+    from .pipeline.config import ATTACH_FACES as _ATTACH_FACES
+    samples_b64 = []
+    for i in top_idx[:max(0, _ATTACH_FACES)]:
+        if 0 <= i < len(used_faces):
+            try:
+                ok, enc = cv2.imencode('.jpg', used_faces[i], [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                if ok:
+                    samples_b64.append({
+                        "idx": int(i),
+                        "image_jpg_base64": base64.b64encode(enc.tobytes()).decode('ascii')
+                    })
+            except Exception:
+                pass
+
     # timing conversion for segments (seconds)
     if sample_fps and sample_fps > 0:
         for seg in segments:
@@ -368,6 +391,7 @@ def run_video(
             "size_min": (float(np.min(face_sizes)) if len(face_sizes) else None),
             "size_max": (float(np.max(face_sizes)) if len(face_sizes) else None),
             "det_score_mean": (float(np.mean(det_scores)) if len(det_scores) else None),
+            "samples": samples_b64,
         },
         "runtime": {
             "det_providers": getattr(det_sess, 'get_providers', lambda: [])(),
@@ -425,10 +449,11 @@ def run_image(
         x2 = int(max(0, min(w - 1, x2)))
         y2 = int(max(0, min(h - 1, y2)))
         bbox_size = float(max(1.0, min(x2 - x1, y2 - y1)))
-        if kps is not None:
+        from .pipeline.config import CROP_MARGIN as _CROP_MARGIN, DISABLE_ALIGN_WARP as _DISABLE_WARP
+        if kps is not None and not _DISABLE_WARP:
             aligned = warp_by_5pts(frame, kps, (align_size, align_size))
         else:
-            pad = int(0.12 * max(y2 - y1, x2 - x1))
+            pad = int(_CROP_MARGIN * max(y2 - y1, x2 - x1))
             xx1 = max(0, x1 - pad); yy1 = max(0, y1 - pad)
             xx2 = min(w, x2 + pad); yy2 = min(h, y2 + pad)
             crop = frame[yy1:yy2, xx1:xx2]
@@ -476,6 +501,15 @@ def run_image(
     q50 = float(np.quantile(probs_arr, 0.5))
     exemplars = [{"idx": 0, "prob": float(fake_prob)}]
 
+    # attach single-face sample (base64)
+    sample_b64 = None
+    try:
+        ok, enc = cv2.imencode('.jpg', aligned, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        if ok:
+            sample_b64 = base64.b64encode(enc.tobytes()).decode('ascii')
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "clips": 1,
@@ -509,6 +543,7 @@ def run_image(
         "faces": {
             "size_mean": (float(bbox_size) if bbox_size is not None else None),
             "det_score_mean": (float(det[0,4]) if det is not None and len(det)>0 else None),
+            "samples": ([{"idx": 0, "image_jpg_base64": sample_b64}] if sample_b64 else []),
         },
         "runtime": {
             "det_providers": getattr(det_sess, 'get_providers', lambda: [])(),

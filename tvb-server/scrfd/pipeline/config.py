@@ -157,3 +157,10 @@ TORCH_EXTRACTOR_CKPT = os.environ.get('TVB_TORCH_EXTRACTOR_CKPT')
 TORCH_MODEL_CKPT = os.environ.get('TVB_TORCH_MODEL_CKPT')
 TORCH_DEVICE = os.environ.get('TVB_TORCH_DEVICE', 'cuda')
 DUAL_RUN = _env_flag('TVB_DUAL_RUN', False)
+
+# Align/crop controls
+CROP_MARGIN = float(os.environ.get('TVB_CROP_MARGIN', '0.12'))
+DISABLE_ALIGN_WARP = _env_flag('TVB_DISABLE_ALIGN_WARP', False)
+
+# Attach face thumbnails in result
+ATTACH_FACES = int(os.environ.get('TVB_ATTACH_FACES', '1'))
