@@ -53,7 +53,7 @@ class TorchClassifierRunner:
         except Exception:
             return None
         # common patterns: {'state_dict': ...} or raw state_dict
-        if isinstance(obj, dict) and any(k in obj for k in ("state_dict", "model_state", "net", "module")):
+        if isinstance(obj, dict) and any(k in obj for k in ("state_dict", "model_state", "model_state_dict", "net", "module")):
             for k in ("state_dict", "model_state", "net", "module"):
                 if k in obj:
                     return obj[k]
@@ -132,4 +132,3 @@ class TorchClassifierRunner:
             logits = self.classifier(feats)
             probs = torch.softmax(logits, dim=-1).detach().cpu().numpy().reshape(-1).tolist()
         return probs[0] if len(probs) else 0.0, probs
-

@@ -44,6 +44,32 @@ TVB_ENV_FILE=/etc/tvb-ai/envs/edge-device.env uvicorn tvb-ai.tvb-server.app:app
 - `TVB_DUAL_RUN`: `1`이면 Torch 사용 시 에러 시 CPU/ONNX로 폴백 (내부 폴백 로직 있음)
 - `TVB_TORCH_BUILDER`: (선택) `pkg.module:build_fn` 형태. TorchScript가 아닌 state_dict 체크포인트일 때, 이 빌더가 `(extractor, classifier)` 모듈을 생성하고 우리가 `state_dict`를 로드합니다.
 
+## MINTIME TorchScript 내보내기(추천)
+state_dict 체크포인트를 TorchScript로 변환하면 런타임에서 바로 로드됩니다.
+
+1) 빌더 구현(예: `tvb-ai/tvb-server/mintime_builder.py`의 `build()` 구현)
+2) 변환 실행:
+```bash
+python3 tvb-ai/tvb-server/mintime_export.py \
+  --extractor-ckpt tvb-ai/tvb-server/MINTIME_XC_Extractor_checkpoint30 \
+  --classifier-ckpt tvb-ai/tvb-server/MINTIME_XC_Model_checkpoint30 \
+  --out-extractor tvb-ai/tvb-server/mintime_extractor.pt \
+  --out-classifier tvb-ai/tvb-server/mintime_classifier.pt \
+  --builder mintime_builder:build \
+  --clip-len 8 --size 224
+```
+3) `.env.prod`에 지정:
+```ini
+TVB_CLASSIFIER_BACKEND=torch
+TVB_TORCH_EXTRACTOR_CKPT=/home/smin/tvb/tvb-ai/tvb-server/mintime_extractor.pt
+TVB_TORCH_MODEL_CKPT=/home/smin/tvb/tvb-ai/tvb-server/mintime_classifier.pt
+TVB_TORCH_DEVICE=cuda
+TVB_CLIP_LEN=8
+TVB_CLIP_STRIDE=4
+TVB_ALIGN=224
+TVB_FAKE_IDX_CLIP=1
+```
+
 예시 (주석 해제하여 사용):
 ```
 # TVB_CLASSIFIER_BACKEND=torch
