@@ -183,7 +183,8 @@ def run_video(
             prev_kps = kps if kps is not None else prev_kps
 
             # -------- 3) frame-mode (image ONNX): immediate infer --------
-            if clip_len <= 1:
+            # If Torch is not available, force frame-mode even when clip_len>1 (ONNX expects 4D input)
+            if clip_len <= 1 or torch_runner is None:
                 iname = input_name or cls_sess.get_inputs()[0].name
                 if torch_runner is not None:
                     _, probs_all = torch_runner.infer_clip([aligned], size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
@@ -212,7 +213,7 @@ def run_video(
         # -------- 4) clip-mode (for temporal models) --------
         # Only run temporal clip-mode when the model expects 5D (clip_len > 1).
         # For image models (clip_len <= 1), skip this path to avoid feeding 5D to 4D inputs.
-        if clip_len > 1 and len(buffer) == clip_len and ((sampled % clip_stride) == 0):
+        if clip_len > 1 and torch_runner is not None and len(buffer) == clip_len and ((sampled % clip_stride) == 0):
             if torch_runner is not None:
                 _, probs_all = torch_runner.infer_clip(list(buffer), size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
                 fake_prob = float(probs_all[_FAKE_IDX_CLIP_CFG]) if len(probs_all) > _FAKE_IDX_CLIP_CFG else float(probs_all[0])
