@@ -21,7 +21,7 @@
 
 ### 수정 예시
 ```python
-# tvb-ai/tvb-server/scrfd/pipeline/config.py
+# tvb-ai/tvb-server/detection/pipeline/config.py
 DET_ONNX_PATH = "/mnt/models/scrfd_10g_bnkps.onnx"
 CLS_ONNX_PATH = "/mnt/models/deepfake_classifier.onnx"
 DET_ONNX_PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]

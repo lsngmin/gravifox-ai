@@ -20,11 +20,11 @@ import tensorflow as tf
 import time
 from datetime import datetime
 import onnxruntime as ort
-from scrfd import *
-from scrfd.pipeline.config import *
-from scrfd.video_infer import run_video
+from detection import *
+from detection.pipeline.config import *
+from detection.video_infer import run_video
 
-# BNKPS_MODEL_PATH = "tvb-model/scrfd/bnkps.onnx"
+# BNKPS_MODEL_PATH = "tvb-model/detection/bnkps.onnx"
 # scrfd_sess = ort.InferenceSession(BNKPS_MODEL_PATH, providers=["CPUExecutionProvider"])
 # detector = SCRFDDetector(session=scrfd_sess)
 

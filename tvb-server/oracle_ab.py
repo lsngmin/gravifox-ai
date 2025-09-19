@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-from scrfd.pipeline.config import (
+from detection.pipeline.config import (
     DET_ONNX_PATH,
     DET_ONNX_PROVIDERS,
     CLS_ONNX_PATH,
@@ -32,9 +32,9 @@ from scrfd.pipeline.config import (
     POSE_DELTA_OUTLIER,
     LAYOUT,
 )
-from scrfd.runtime import SCRFDDetector
-from scrfd.pipeline.classifier_utils import preprocess_image
-from scrfd.video_infer import softmax, run_media
+from detection.runtime import SCRFDDetector
+from detection.pipeline.classifier_utils import preprocess_image
+from detection.video_infer import softmax, run_media
 
 
 def to_probs(out: np.ndarray) -> np.ndarray:

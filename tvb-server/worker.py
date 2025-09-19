@@ -12,8 +12,8 @@ FILE_STORE_ROOT = Path(os.environ.get("FILE_STORE_ROOT", "/tmp/uploads"))
 
 # ---- Video analysis (ONNX) ----
 import onnxruntime as ort
-from scrfd.video_infer import run_media
-from scrfd.pipeline.config import (
+from detection.video_infer import run_media
+from detection.pipeline.config import (
     DET_ONNX_PATH, CLS_ONNX_PATH, DET_ONNX_PROVIDERS, CLS_ONNX_PROVIDERS,
     CONF, FPS, CLIP_LEN, CLIP_STRIDE,
     ALIGN, LAYOUT, RGB, MEAN, STD, THRESHOLD, HIGH_CONF, SPECTRAL_R0, POSE_DELTA_OUTLIER,
