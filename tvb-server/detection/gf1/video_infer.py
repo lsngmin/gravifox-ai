@@ -242,11 +242,11 @@ def run_video(
                         N, T, C, H, W = inp_fl.shape
                         inp_fl = inp_fl.reshape(N * T, C, H, W)
                     out_fl = cls_sess.run(None, {iname: inp_fl})[0]
-                        probs_fl = _to_probs(out_fl)
-                        p1 = float(
-                            probs_fl[FAKE_IDX_IMAGE]
-                            if len(probs_fl) > FAKE_IDX_IMAGE else probs_fl[0]
-                        )
+                    probs_fl = _to_probs(out_fl)
+                    p1 = float(
+                        probs_fl[FAKE_IDX_IMAGE]
+                        if len(probs_fl) > FAKE_IDX_IMAGE else probs_fl[0]
+                    )
                     fake_prob = 0.5 * (fake_prob + p1)
                 # gating by face size / det score
                 _sz = face_sizes[-1] if len(face_sizes) else None
@@ -518,12 +518,14 @@ def run_image(
         x2 = int(max(0, min(w - 1, x2)))
         y2 = int(max(0, min(h - 1, y2)))
         bbox_size = float(max(1.0, min(x2 - x1, y2 - y1)))
-            if kps is not None and not DISABLE_ALIGN_WARP:
-                aligned = warp_by_5pts(frame, kps, (align_size, align_size))
-            else:
-                pad = int(CROP_MARGIN * max(y2 - y1, x2 - x1))
-            xx1 = max(0, x1 - pad); yy1 = max(0, y1 - pad)
-            xx2 = min(w, x2 + pad); yy2 = min(h, y2 + pad)
+        if kps is not None and not DISABLE_ALIGN_WARP:
+            aligned = warp_by_5pts(frame, kps, (align_size, align_size))
+        else:
+            pad = int(CROP_MARGIN * max(y2 - y1, x2 - x1))
+            xx1 = max(0, x1 - pad)
+            yy1 = max(0, y1 - pad)
+            xx2 = min(w, x2 + pad)
+            yy2 = min(h, y2 + pad)
             crop = frame[yy1:yy2, xx1:xx2]
             if crop.size > 0:
                 aligned = cv2.resize(crop, (align_size, align_size))
