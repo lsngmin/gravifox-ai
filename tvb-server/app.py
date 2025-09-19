@@ -1,3 +1,10 @@
+import sys
+from pathlib import Path
+
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.append(str(_THIS_DIR))
+
 import tf_keras
 from pydantic import BaseModel
 from fastapi.responses import JSONResponse
@@ -21,13 +28,7 @@ from scrfd.video_infer import run_video
 # detector = SCRFDDetector(session=scrfd_sess)
 
 import os, uuid, datetime as dt, asyncio
-from pathlib import Path
 from typing import Any
-import sys
-
-_THIS_DIR = Path(__file__).resolve().parent
-if str(_THIS_DIR) not in sys.path:
-    sys.path.append(str(_THIS_DIR))
 
 from settings import ENABLE_MQ, TVB_MAX_CONCURRENCY
 
