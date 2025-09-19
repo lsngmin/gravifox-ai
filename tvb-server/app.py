@@ -23,7 +23,13 @@ from scrfd.video_infer import run_video
 import os, uuid, datetime as dt, asyncio
 from pathlib import Path
 from typing import Any
-from .settings import ENABLE_MQ, TVB_MAX_CONCURRENCY
+import sys
+
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.append(str(_THIS_DIR))
+
+from settings import ENABLE_MQ, TVB_MAX_CONCURRENCY
 
 # Unified file store root via env so FastAPI and worker see the same path
 # Default: /tmp/uploads (matches worker.py default)

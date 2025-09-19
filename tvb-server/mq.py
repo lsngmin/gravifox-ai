@@ -2,10 +2,16 @@ from __future__ import annotations
 import json
 import ssl
 from typing import Callable, Awaitable, Optional, Tuple
+import sys
+from pathlib import Path
 
 import aio_pika
 
-from .settings import (
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.append(str(_THIS_DIR))
+
+from settings import (
     RABBITMQ_URL,
     RABBITMQ_USE_TLS,
     RABBITMQ_VERIFY_PEER,
@@ -25,7 +31,7 @@ def _should_use_tls(url: str) -> bool:
 
 
 def _resolve_tls(url: str) -> Tuple[bool, Optional[ssl.SSLContext]]:
-    """Derive TLS usage and SSL context based on env overrides and URL scheme."""
+    """Derive TLS usage and SSL context based on configured overrides."""
     use_tls = _should_use_tls(url)
     if not use_tls:
         return False, None
@@ -76,7 +82,6 @@ class MQ:
         assert self._ex is not None
         body = json.dumps(payload).encode("utf-8")
         msg = aio_pika.Message(body=body, content_type="application/json", delivery_mode=aio_pika.DeliveryMode.PERSISTENT)
-        # debug print
         try:
             print(f"[MQ] publish rk={routing_key} bytes={len(body)}")
         except Exception:

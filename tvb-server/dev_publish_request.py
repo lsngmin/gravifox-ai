@@ -1,21 +1,15 @@
 import asyncio
 import json
 import aio_pika
+import sys
+from pathlib import Path
 
-try:
-    from .settings import RABBITMQ_URL, ANALYZE_EXCHANGE
-    from .mq import build_connect_kwargs
-except ImportError:
-    # Allow execution as a standalone script (python tvb-server/dev_publish_request.py ...)
-    import sys
-    from pathlib import Path
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.append(str(_THIS_DIR))
 
-    ROOT = Path(__file__).resolve().parent
-    if str(ROOT) not in sys.path:
-        sys.path.append(str(ROOT))
-
-    from settings import RABBITMQ_URL, ANALYZE_EXCHANGE  # type: ignore
-    from mq import build_connect_kwargs  # type: ignore
+from settings import RABBITMQ_URL, ANALYZE_EXCHANGE
+from mq import build_connect_kwargs
 
 
 async def main(job_id: str, upload_id: str):
@@ -30,7 +24,6 @@ async def main(job_id: str, upload_id: str):
 
 
 if __name__ == "__main__":
-    import sys
     if len(sys.argv) != 3:
         print("usage: python dev_publish_request.py <jobId> <uploadId>")
         raise SystemExit(2)
