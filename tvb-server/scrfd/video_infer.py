@@ -367,7 +367,7 @@ def run_video(
     high_conf_ratio = float(np.mean(probs_arr >= high_conf_threshold))
 
     # Aggregation options
-    from .pipeline.config import AGGREGATOR, TOPK_RATIO, SEG_THRESHOLD, SEG_MIN_LEN
+    from .pipeline.config import AGGREGATOR, TOPK_RATIO, TRIM_RATIO, SEG_THRESHOLD, SEG_MIN_LEN
     agg_name = AGGREGATOR.lower()
     agg_score = mean_p
     if agg_name == 'median':
@@ -378,6 +378,10 @@ def run_video(
         agg_score = float(np.mean(topk))
     elif agg_name == 'p95':
         agg_score = float(np.quantile(probs_arr, 0.95))
+    elif agg_name == 'trimmed_mean':
+        keep = max(1, int(round(len(probs_arr) * (1.0 - TRIM_RATIO))))
+        trimmed = np.sort(probs_arr)[-keep:]
+        agg_score = float(np.mean(trimmed))
     elif agg_name == 'hybrid':
         k = max(1, int(round(len(probs_arr) * TOPK_RATIO)))
         topk = np.sort(probs_arr)[-k:]

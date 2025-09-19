@@ -39,6 +39,9 @@ TVB_ENV_FILE=/etc/tvb-ai/envs/edge-device.env uvicorn tvb-ai.tvb-server.app:app
 - `TVB_TEMP_SCALE`: Temperature scaling 값(T>1이면 과신 억제). 기본 1.0.
 - `TVB_ONNX_OUTPUT_PROBS`: ONNX 분류기 출력이 이미 확률일 때 `true`로 설정.
 - `TVB_LOG_PREPROC`, `TVB_LOG_MODEL_OUTPUT`: 전처리 텐서/모델 출력 통계를 초기 몇 회 로그로 남깁니다.
+- `TVB_AGGREGATOR`: `mean`, `median`, `topk_mean`, `p95`, `hybrid`, `trimmed_mean` 등 집계 방식 선택
+- `TVB_TOPK_RATIO`: `topk_mean`/`hybrid`에서 사용할 상위 비율(예: 0.3 → 상위 30%)
+- `TVB_TRIM_RATIO`: `trimmed_mean`에서 제거할 하위 비율(예: 0.2 → 하위 20% 제외)
 - `oracle_ab.py` 스크립트: `python oracle_ab.py <video_path> --frames 64 --center-fraction 0.6 --conf 0.55`로 파이프라인 결과와 오라클 크롭 결과(p95, top10% mean 등)를 비교할 수 있습니다. `--output` 옵션으로 JSON 저장 가능.
 
 ### 백엔드 전환(롤백 가능)

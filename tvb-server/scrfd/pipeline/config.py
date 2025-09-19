@@ -164,6 +164,7 @@ FAKE_IDX_CLIP = int(os.environ.get('TVB_FAKE_IDX_CLIP', '1'))
 # Aggregation config
 AGGREGATOR = os.environ.get('TVB_AGGREGATOR', 'mean')  # mean|median|topk_mean|p95|hybrid
 TOPK_RATIO = float(os.environ.get('TVB_TOPK_RATIO', '0.2'))  # for topk_mean/hybrid
+TRIM_RATIO = float(os.environ.get('TVB_TRIM_RATIO', '0.2'))  # for trimmed_mean
 SEG_THRESHOLD = float(os.environ.get('TVB_SEG_THRESHOLD', str(THRESHOLD)))
 SEG_MIN_LEN = int(os.environ.get('TVB_SEG_MIN_LEN', '3'))  # minimum consecutive samples
 
