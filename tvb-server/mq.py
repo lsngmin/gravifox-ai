@@ -1,49 +1,45 @@
 from __future__ import annotations
 import json
-import os
 import ssl
 from typing import Callable, Awaitable, Optional, Tuple
 
 import aio_pika
 
+from .settings import (
+    RABBITMQ_URL,
+    RABBITMQ_USE_TLS,
+    RABBITMQ_VERIFY_PEER,
+    RABBITMQ_CA_FILE,
+    RABBITMQ_CERT_FILE,
+    RABBITMQ_KEY_FILE,
+    ANALYZE_EXCHANGE,
+    REQUEST_QUEUE,
+    RABBITMQ_PREFETCH,
+)
 
-RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://admin:admin@localhost:5672/")
-EXCHANGE_NAME = os.environ.get("ANALYZE_EXCHANGE", "analyze.exchange")
-REQUEST_QUEUE = os.environ.get("REQUEST_QUEUE", "analyze.request.fastapi")
-PREFETCH_COUNT = int(os.environ.get("RABBITMQ_PREFETCH", "10"))
 
-
-def _env_flag(name: str) -> Optional[bool]:
-    raw = os.environ.get(name)
-    if raw is None:
-        return None
-    normalized = raw.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    return None
+def _should_use_tls(url: str) -> bool:
+    if RABBITMQ_USE_TLS is not None:
+        return bool(RABBITMQ_USE_TLS)
+    return url.lower().startswith("amqps://")
 
 
 def _resolve_tls(url: str) -> Tuple[bool, Optional[ssl.SSLContext]]:
     """Derive TLS usage and SSL context based on env overrides and URL scheme."""
-    use_tls = _env_flag("RABBITMQ_USE_TLS")
-    if use_tls is None:
-        use_tls = url.lower().startswith("amqps://")
+    use_tls = _should_use_tls(url)
     if not use_tls:
         return False, None
 
-    cafile = os.environ.get("RABBITMQ_CA_FILE")
-    context = ssl.create_default_context(cafile=cafile or None)
+    cafile = RABBITMQ_CA_FILE if RABBITMQ_CA_FILE else None
+    context = ssl.create_default_context(cafile=cafile)
 
     # Optional client certs for mutual TLS
-    certfile = os.environ.get("RABBITMQ_CERT_FILE")
-    keyfile = os.environ.get("RABBITMQ_KEY_FILE")
+    certfile = RABBITMQ_CERT_FILE
+    keyfile = RABBITMQ_KEY_FILE
     if certfile:
         context.load_cert_chain(certfile=certfile, keyfile=keyfile or None)
 
-    verify_flag = _env_flag("RABBITMQ_VERIFY_PEER")
-    if verify_flag is False:
+    if RABBITMQ_VERIFY_PEER is False:
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
 
@@ -69,8 +65,8 @@ class MQ:
     async def connect(self) -> None:
         self._conn = await aio_pika.connect_robust(RABBITMQ_URL, **build_connect_kwargs())
         self._chan = await self._conn.channel()
-        await self._chan.set_qos(prefetch_count=PREFETCH_COUNT)
-        self._ex = await self._chan.declare_exchange(EXCHANGE_NAME, aio_pika.ExchangeType.TOPIC, durable=True)
+        await self._chan.set_qos(prefetch_count=RABBITMQ_PREFETCH)
+        self._ex = await self._chan.declare_exchange(ANALYZE_EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True)
 
     async def close(self) -> None:
         if self._conn:

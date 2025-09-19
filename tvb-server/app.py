@@ -23,6 +23,7 @@ from scrfd.video_infer import run_video
 import os, uuid, datetime as dt, asyncio
 from pathlib import Path
 from typing import Any
+from .settings import ENABLE_MQ, TVB_MAX_CONCURRENCY
 
 # Unified file store root via env so FastAPI and worker see the same path
 # Default: /tmp/uploads (matches worker.py default)
@@ -199,7 +200,7 @@ async def _on_startup():
     # spawn TTL clean task
     asyncio.create_task(_ttl_cleanup_loop())
     # optional: start MQ consumer if configured
-    if os.environ.get("ENABLE_MQ", "1") == "1":
+    if ENABLE_MQ:
         try:
             # Use module imports from the same directory (not package-relative)
             # because folder names contain dashes and cannot be used as package names.
@@ -210,8 +211,7 @@ async def _on_startup():
             await mq.connect()
 
             # bounded concurrency (default 1)
-            max_c = int(os.environ.get("TVB_MAX_CONCURRENCY", "1"))
-            sem = asyncio.Semaphore(max(1, max_c))
+            sem = asyncio.Semaphore(max(1, TVB_MAX_CONCURRENCY))
 
             from typing import Dict
             async def handle_request(payload: Dict[str, Any]):
