@@ -8,8 +8,9 @@ from pathlib import Path
 import aio_pika
 
 _THIS_DIR = Path(__file__).resolve().parent
-if str(_THIS_DIR) not in sys.path:
-    sys.path.append(str(_THIS_DIR))
+_THIS_DIR_STR = str(_THIS_DIR)
+if _THIS_DIR_STR not in sys.path:
+    sys.path.insert(0, _THIS_DIR_STR)
 
 from settings import (
     RABBITMQ_URL,
