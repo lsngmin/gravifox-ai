@@ -36,6 +36,9 @@ TVB_ENV_FILE=/etc/tvb-ai/envs/edge-device.env uvicorn tvb-ai.tvb-server.app:app
 - `TVB_DETECTOR_PROVIDERS` / `TVB_CLASSIFIER_PROVIDERS`: 각 세션에 적용할 ONNX Runtime provider 목록(쉼표 구분)
 - `TVB_ONNX_PROVIDERS`: 위 두 값이 없을 때 공통 기본 provider로 사용됨
 - `TVB_MEAN`, `TVB_STD`: 분류기 입력 정규화(mean,std). 쉼표 구분(예: `0.5,0.5,0.5`). 기본값은 ViT 스타일([0.5,0.5,0.5])로 [-1,1] 스케일링을 적용합니다.
+- `TVB_TEMP_SCALE`: Temperature scaling 값(T>1이면 과신 억제). 기본 1.0.
+- `TVB_ONNX_OUTPUT_PROBS`: ONNX 분류기 출력이 이미 확률일 때 `true`로 설정.
+- `TVB_LOG_PREPROC`, `TVB_LOG_MODEL_OUTPUT`: 전처리 텐서/모델 출력 통계를 초기 몇 회 로그로 남깁니다.
 
 ### 백엔드 전환(롤백 가능)
 - `TVB_CLASSIFIER_BACKEND`: `onnx`(기본) 또는 `torch`

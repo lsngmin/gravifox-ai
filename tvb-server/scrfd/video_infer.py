@@ -8,8 +8,56 @@ from .runtime import SCRFDDetector
 
 from .pipeline.detector_utils import warp_by_5pts, estimate_pose_5pts, lm_jitter, spectral_highfreq_ratio
 from .pipeline.classifier_utils import softmax, preprocess_image, preprocess_frames
-from .pipeline.config import VIDEO_PATH, DEFAULT_DETECTOR_ONNX
+from .pipeline.config import (
+    VIDEO_PATH,
+    DEFAULT_DETECTOR_ONNX,
+    TEMP_SCALE,
+    ONNX_OUTPUT_PROBS,
+    LOG_PREPROC,
+    LOG_MODEL_OUTPUT,
+)
 from pathlib import Path
+
+_PREPROC_LOG_LIMIT = 3
+_MODEL_LOG_LIMIT = 5
+_preproc_log_counts = {"frame": 0, "clip": 0}
+_model_log_count = 0
+
+
+def _log_preproc(tag: str, tensor: np.ndarray) -> None:
+    if not LOG_PREPROC:
+        return
+    if _preproc_log_counts.get(tag, 0) >= _PREPROC_LOG_LIMIT:
+        return
+    flat = tensor.astype(np.float32).ravel()
+    print(
+        f"[PREPROC][{tag}] shape={tensor.shape} min={flat.min():.4f} max={flat.max():.4f} mean={flat.mean():.4f}",
+        flush=True,
+    )
+    _preproc_log_counts[tag] = _preproc_log_counts.get(tag, 0) + 1
+
+
+def _to_probs(arr: np.ndarray) -> np.ndarray:
+    global _model_log_count
+    arr = np.asarray(arr)
+    if arr.ndim > 1:
+        arr = arr.reshape(arr.shape[0], -1)[0]
+    arr = arr.astype(np.float32)
+    if ONNX_OUTPUT_PROBS:
+        probs = arr
+    else:
+        logits = arr
+        if TEMP_SCALE and TEMP_SCALE != 1.0:
+            logits = logits / float(TEMP_SCALE)
+        probs = softmax(logits, axis=-1)
+    if LOG_MODEL_OUTPUT and _model_log_count < _MODEL_LOG_LIMIT:
+        print(
+            f"[ONNX][classifier] raw={arr.tolist()} probs={probs.tolist()} sum={float(np.sum(probs)):.6f}"
+            f" (outputs {'prob' if ONNX_OUTPUT_PROBS else 'logit'} mode, temp={TEMP_SCALE})",
+            flush=True,
+        )
+        _model_log_count += 1
+    return probs
 
 def run_video(
     video_path: str,
@@ -207,21 +255,23 @@ def run_video(
                         mean=mean,
                         std=std,
                     )  # (1,3,H,W)
+                    _log_preproc("frame", inp)
                     if inp.ndim == 5:
                         N, T, C, H, W = inp.shape
                         inp = inp.reshape(N * T, C, H, W)
-                    logits = cls_sess.run(None, {iname: inp})[0]  # (1,2)
-                    pr = softmax(logits, axis=-1)
-                    fake_prob = float(pr[0, _FAKE_IDX_IMAGE_CFG])
+                    out = cls_sess.run(None, {iname: inp})[0]
+                    probs_vec = _to_probs(out)
+                    fake_prob = float(probs_vec[_FAKE_IDX_IMAGE_CFG])
                     if _TTA:
                         aligned_fl = cv2.flip(aligned, 1)
                         inp_fl = preprocess_image(aligned_fl, size=align_size, rgb=rgb, mean=mean, std=std)
+                        _log_preproc("frame", inp_fl)
                         if inp_fl.ndim == 5:
                             N, T, C, H, W = inp_fl.shape
                             inp_fl = inp_fl.reshape(N * T, C, H, W)
-                        logits_fl = cls_sess.run(None, {iname: inp_fl})[0]
-                        pr_fl = softmax(logits_fl, axis=-1)
-                        p1 = float(pr_fl[0, _FAKE_IDX_IMAGE_CFG])
+                        out_fl = cls_sess.run(None, {iname: inp_fl})[0]
+                        probs_fl = _to_probs(out_fl)
+                        p1 = float(probs_fl[_FAKE_IDX_IMAGE_CFG])
                         fake_prob = 0.5 * (fake_prob + p1)
                 # gating by face size / det score
                 from .pipeline.config import MIN_FACE as _MIN_FACE, MIN_DET_SCORE as _MIN_S
@@ -253,10 +303,11 @@ def run_video(
                     fake_prob = p0
             else:
                 inp = preprocess_frames(list(buffer), size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
+                _log_preproc("clip", inp)
                 iname = input_name or cls_sess.get_inputs()[0].name
-                out = cls_sess.run(None, {iname: inp})
-                pr = softmax(out[0], axis=-1)
-                fake_prob = float(pr[0, _FAKE_IDX_CLIP_CFG])
+                out = cls_sess.run(None, {iname: inp})[0]
+                probs_vec = _to_probs(out)
+                fake_prob = float(probs_vec[_FAKE_IDX_CLIP_CFG])
             # gating for clip (use last measured size/score as proxy)
             from .pipeline.config import MIN_FACE as _MIN_FACE, MIN_DET_SCORE as _MIN_S
             _sz = face_sizes[-1] if len(face_sizes) else None
@@ -280,10 +331,12 @@ def run_video(
     if clip_len <= 1 and len(probs) == 0 and len(buffer) > 0:
         iname = input_name or cls_sess.get_inputs()[0].name
         inp = preprocess_image(buffer[-1], size=align_size, rgb=rgb, mean=mean, std=std)
-        logits = cls_sess.run(None, {iname: inp})[0]
-        pr = softmax(logits, axis=-1)
-        probs.append(float(pr[0, 0]))
-        prob_series.append(float(pr[0, 0]))
+        _log_preproc("frame", inp)
+        out = cls_sess.run(None, {iname: inp})[0]
+        probs_vec = _to_probs(out)
+        p_fake = float(probs_vec[_FAKE_IDX_IMAGE_CFG])
+        probs.append(p_fake)
+        prob_series.append(p_fake)
         infer_cnt += 1
 
     # aggregate
@@ -522,9 +575,11 @@ def run_image(
         # classify single aligned face
         iname = input_name or cls_sess.get_inputs()[0].name
         inp = preprocess_image(aligned, size=align_size, rgb=rgb, mean=mean, std=std)
-        logits = cls_sess.run(None, {iname: inp})[0]
-        pr = softmax(logits, axis=-1)
-        fake_prob = float(pr[0, 0])  # image model: index 0 = fake assumption
+        _log_preproc("frame", inp)
+        out = cls_sess.run(None, {iname: inp})[0]
+        from .pipeline.config import FAKE_IDX_IMAGE as _IMG_FAKE_IDX
+        probs_vec = _to_probs(out)
+        fake_prob = float(probs_vec[_IMG_FAKE_IDX])
     else:
         return {
             "ok": False,
