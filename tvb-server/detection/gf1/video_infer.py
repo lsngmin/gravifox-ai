@@ -8,7 +8,7 @@ from .runtime import SCRFDDetector
 
 from .pipeline.detector_utils import warp_by_5pts, estimate_pose_5pts, lm_jitter, spectral_highfreq_ratio
 from .pipeline.classifier_utils import softmax, preprocess_image, preprocess_frames
-from .pipeline.config import (
+from .config import (
     VIDEO_PATH,
     TEMP_SCALE,
     ONNX_OUTPUT_PROBS,
@@ -85,7 +85,7 @@ def run_video(
 
     # Ensure we always have an ONNX classifier session available.
     if cls_sess is None:
-        from .pipeline.config import CLS_ONNX_PATH, CLS_ONNX_PROVIDERS, create_onnx_session as _mk
+        from .config import CLS_ONNX_PATH, CLS_ONNX_PROVIDERS, create_onnx_session as _mk
         cls_sess = _mk("classifier", CLS_ONNX_PATH, CLS_ONNX_PROVIDERS)
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -163,7 +163,7 @@ def run_video(
             y2 = int(max(0, min(h - 1, y2)))
             bbox_size = float(max(1.0, min(x2 - x1, y2 - y1)))
 
-            from .pipeline.config import CROP_MARGIN as _CROP_MARGIN, DISABLE_ALIGN_WARP as _DISABLE_WARP
+                from .config import CROP_MARGIN as _CROP_MARGIN, DISABLE_ALIGN_WARP as _DISABLE_WARP
             if kps is not None and not _DISABLE_WARP:
                 aligned = warp_by_5pts(frame, kps, (align_size, align_size))
             else:
@@ -203,7 +203,7 @@ def run_video(
             # -------- 3) frame-mode (image ONNX): immediate infer --------
             if clip_len <= 1:
                 iname = input_name or cls_sess.get_inputs()[0].name
-                from .pipeline.config import TTA_FLIP as _TTA
+                from .config import TTA_FLIP as _TTA
                 inp = preprocess_image(
                     aligned,
                     size=align_size,
@@ -236,7 +236,7 @@ def run_video(
                     )
                     fake_prob = 0.5 * (fake_prob + p1)
                 # gating by face size / det score
-                from .pipeline.config import MIN_FACE as _MIN_FACE, MIN_DET_SCORE as _MIN_S
+                from .config import MIN_FACE as _MIN_FACE, MIN_DET_SCORE as _MIN_S
                 _sz = face_sizes[-1] if len(face_sizes) else None
                 _sc = det_scores[-1] if len(det_scores) else None
                 if ((_sz is None or _sz >= _MIN_FACE) and (_sc is None or _sc >= _MIN_S)):
@@ -262,7 +262,7 @@ def run_video(
                 if len(probs_vec) > FAKE_IDX_CLIP else probs_vec[0]
             )
             # gating for clip (use last measured size/score as proxy)
-            from .pipeline.config import MIN_FACE as _MIN_FACE, MIN_DET_SCORE as _MIN_S
+            from .config import MIN_FACE as _MIN_FACE, MIN_DET_SCORE as _MIN_S
             _sz = face_sizes[-1] if len(face_sizes) else None
             _sc = det_scores[-1] if len(det_scores) else None
             if ((_sz is None or _sz >= _MIN_FACE) and (_sc is None or _sc >= _MIN_S)):
@@ -307,7 +307,7 @@ def run_video(
         }
 
     # optional EWMA smoothing before aggregation
-    from .pipeline.config import EWMA_ALPHA as _EWMA_ALPHA
+    from .config import EWMA_ALPHA as _EWMA_ALPHA
     probs_raw = list(probs)
     if _EWMA_ALPHA is not None and 0.0 < _EWMA_ALPHA < 1.0 and len(probs) > 1:
         sm = []
@@ -323,7 +323,7 @@ def run_video(
     high_conf_ratio = float(np.mean(probs_arr >= high_conf_threshold))
 
     # Aggregation options
-    from .pipeline.config import AGGREGATOR, TOPK_RATIO, TRIM_RATIO, SEG_THRESHOLD, SEG_MIN_LEN
+    from .config import AGGREGATOR, TOPK_RATIO, TRIM_RATIO, SEG_THRESHOLD, SEG_MIN_LEN
     agg_name = AGGREGATOR.lower()
     agg_score = mean_p
     if agg_name == 'median':
@@ -395,7 +395,7 @@ def run_video(
     exemplars = [{"idx": int(i), "prob": float(probs_arr[i])} for i in top_idx]
 
     # attach face thumbnails (base64)
-    from .pipeline.config import ATTACH_FACES as _ATTACH_FACES
+    from .config import ATTACH_FACES as _ATTACH_FACES
     samples_b64 = []
     for i in top_idx[:max(0, _ATTACH_FACES)]:
         if 0 <= i < len(used_faces):
@@ -510,7 +510,7 @@ def run_image(
         x2 = int(max(0, min(w - 1, x2)))
         y2 = int(max(0, min(h - 1, y2)))
         bbox_size = float(max(1.0, min(x2 - x1, y2 - y1)))
-        from .pipeline.config import CROP_MARGIN as _CROP_MARGIN, DISABLE_ALIGN_WARP as _DISABLE_WARP
+            from .config import CROP_MARGIN as _CROP_MARGIN, DISABLE_ALIGN_WARP as _DISABLE_WARP
         if kps is not None and not _DISABLE_WARP:
             aligned = warp_by_5pts(frame, kps, (align_size, align_size))
         else:
@@ -628,7 +628,7 @@ def run_media(
     # default as video
     return run_video(path, det_sess, cls_sess, **kwargs)
 
-from .pipeline.config import *
+from .config import *
 
 def main():
     # sessions

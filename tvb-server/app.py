@@ -20,11 +20,7 @@ import tensorflow as tf
 import time
 from datetime import datetime
 import onnxruntime as ort
-from detection import *
-from detection.pipeline.config import *
-from detection.video_infer import run_video
-
-# BNKPS_MODEL_PATH = "tvb-model/detection/bnkps.onnx"
+# BNKPS_MODEL_PATH = "tvb-model/scrfd/bnkps.onnx"
 # scrfd_sess = ort.InferenceSession(BNKPS_MODEL_PATH, providers=["CPUExecutionProvider"])
 # detector = SCRFDDetector(session=scrfd_sess)
 
@@ -32,6 +28,28 @@ import os, uuid, datetime as dt, asyncio
 from typing import Any
 
 from settings import ENABLE_MQ, TVB_MAX_CONCURRENCY
+from detection.gf1.config import (
+    create_onnx_session,
+    DET_ONNX_PATH,
+    CLS_ONNX_PATH,
+    DET_ONNX_PROVIDERS,
+    CLS_ONNX_PROVIDERS,
+    VIDEO_PATH,
+    CONF,
+    FPS,
+    CLIP_LEN,
+    CLIP_STRIDE,
+    ALIGN,
+    LAYOUT,
+    RGB,
+    MEAN,
+    STD,
+    THRESHOLD,
+    HIGH_CONF,
+    SPECTRAL_R0,
+    POSE_DELTA_OUTLIER,
+)
+from detection.gf1 import run_video
 
 # Unified file store root via env so FastAPI and worker see the same path
 # Default: /tmp/uploads (matches worker.py default)

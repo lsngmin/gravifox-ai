@@ -1,7 +1,7 @@
 # tvb-ai 환경 구성 가이드
 
 ## 파이프라인 설정 (ONNX 전용)
-- 추론 관련 설정은 모두 `tvb-ai/tvb-server/scrfd/pipeline/config.py` 안의 상수로 관리합니다.
+- 추론 관련 설정은 모두 `tvb-ai/tvb-server/detection/gf1/config.py` 안의 상수로 관리합니다.
 - `.env.*` 파일이나 `TVB_ENV`, `TVB_ENV_FILE` 같은 환경변수 기반 주입 로직은 제거되었습니다.
 - 필요한 값을 변경하려면 해당 파일을 직접 수정하고, 서비스(uvicorn/worker)를 재시작하면 됩니다.
 

@@ -10,7 +10,7 @@ import numpy as np
 import onnxruntime as ort
 
 # 사용자가 만든 런타임 래퍼 (당신의 모듈 이름에 맞춰 유지)
-from runtime import SCRFDDetector
+from detection.gf1.runtime import SCRFDDetector
 
 # ---- 모델 경로 (당신 환경 그대로 사용) ----
 BNKPS_MODEL_PATH = \

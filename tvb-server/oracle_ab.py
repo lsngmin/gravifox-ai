@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-from detection.pipeline.config import (
+from detection.gf1.config import (
     DET_ONNX_PATH,
     DET_ONNX_PROVIDERS,
     CLS_ONNX_PATH,
@@ -32,9 +32,9 @@ from detection.pipeline.config import (
     POSE_DELTA_OUTLIER,
     LAYOUT,
 )
-from detection.runtime import SCRFDDetector
-from detection.pipeline.classifier_utils import preprocess_image
-from detection.video_infer import softmax, run_media
+from detection.gf1.runtime import SCRFDDetector
+from detection.gf1.pipeline.classifier_utils import preprocess_image
+from detection.gf1.video_infer import softmax, run_media
 
 
 def to_probs(out: np.ndarray) -> np.ndarray:
