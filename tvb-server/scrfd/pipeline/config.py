@@ -193,3 +193,12 @@ MIN_DET_SCORE = float(os.environ.get('TVB_MIN_DET_SCORE', '0'))
 
 # Test-time augmentation
 TTA_FLIP = _env_flag('TVB_TTA_FLIP', False)
+
+# Temperature scaling / output interpretation / logging
+try:
+    TEMP_SCALE = float(os.environ.get('TVB_TEMP_SCALE', '1.0'))
+except Exception:
+    TEMP_SCALE = 1.0
+ONNX_OUTPUT_PROBS = bool(_env_flag('TVB_ONNX_OUTPUT_PROBS', False))
+LOG_PREPROC = bool(_env_flag('TVB_LOG_PREPROC', False))
+LOG_MODEL_OUTPUT = bool(_env_flag('TVB_LOG_MODEL_OUTPUT', False))
