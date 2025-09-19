@@ -8,8 +8,8 @@ from typing import List, Optional
 ROOT_DIR = Path(__file__).resolve().parents[3]
 
 # ---- ONNX 모델 경로 및 세션 설정 ----
-DET_ONNX_PATH = str(ROOT_DIR / "tvb-server" / "scrfd" / "bnkps.onnx")
-CLS_ONNX_PATH = str(ROOT_DIR / "tvb-server" / "scrfd" / "model_q4.onnx")
+DET_ONNX_PATH = str((ROOT_DIR / "tvb-server" / "scrfd_10g_bnkps.onnx").resolve())
+CLS_ONNX_PATH = str((ROOT_DIR / "tvb-server" / "dde" / "onnx" / "model.onnx").resolve())
 
 # onnxruntime provider 우선순위 (CUDA 사용 시 맨 앞에 배치)
 DET_ONNX_PROVIDERS: List[str] = ["CUDAExecutionProvider", "CPUExecutionProvider"]
