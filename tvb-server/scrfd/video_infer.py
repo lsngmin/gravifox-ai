@@ -10,11 +10,12 @@ from .pipeline.detector_utils import warp_by_5pts, estimate_pose_5pts, lm_jitter
 from .pipeline.classifier_utils import softmax, preprocess_image, preprocess_frames
 from .pipeline.config import (
     VIDEO_PATH,
-    DEFAULT_DETECTOR_ONNX,
     TEMP_SCALE,
     ONNX_OUTPUT_PROBS,
     LOG_PREPROC,
     LOG_MODEL_OUTPUT,
+    FAKE_IDX_IMAGE,
+    FAKE_IDX_CLIP,
 )
 from pathlib import Path
 
@@ -82,43 +83,10 @@ def run_video(
     If clip_len <= 1, runs per-frame classification (image ONNX)."""
     detector = SCRFDDetector(session=det_sess)
 
-    # Optional Torch backend for classifier
-    torch_runner = None
-    try:
-        from .pipeline.config import (
-            CLASSIFIER_BACKEND, TORCH_EXTRACTOR_CKPT, TORCH_MODEL_CKPT, TORCH_DEVICE,
-            FAKE_IDX_IMAGE as _FAKE_IDX_IMAGE_CFG,
-            FAKE_IDX_CLIP as _FAKE_IDX_CLIP_CFG,
-        )
-        if CLASSIFIER_BACKEND == 'torch':
-            try:
-                from mintime_runner import TorchClassifierRunner
-                from pathlib import Path as _P
-                _root = _P(__file__).resolve().parents[1]  # tvb-server root
-                ext_ckpt = TORCH_EXTRACTOR_CKPT or str(_root / 'MINTIME_XC_Extractor_checkpoint30')
-                cls_ckpt = TORCH_MODEL_CKPT or str(_root / 'MINTIME_XC_Model_checkpoint30')
-                torch_runner = TorchClassifierRunner(
-                    extractor_ckpt=ext_ckpt,
-                    model_ckpt=cls_ckpt,
-                    device=TORCH_DEVICE,
-                    rgb=rgb,
-                    mean=mean,
-                    std=std,
-                )
-            except Exception as _e:  # fallback to ONNX
-                print(f"[TorchBackend] disabled due to error: {_e}")
-                torch_runner = None
-    except Exception:
-        torch_runner = None
-
-    # If torch backend is requested but torch runner failed and no ONNX classifier session provided,
-    # build an ONNX session as fallback to avoid NoneType errors.
-    if torch_runner is None and cls_sess is None:
-        try:
-            from .pipeline.config import CLS_ONNX_PATH, CLS_ONNX_PROVIDERS, create_onnx_session as _mk
-            cls_sess = _mk("classifier-fallback", CLS_ONNX_PATH, CLS_ONNX_PROVIDERS)
-        except Exception as _e:
-            print(f"[ONNX][classifier] fallback create failed: {_e}")
+    # Ensure we always have an ONNX classifier session available.
+    if cls_sess is None:
+        from .pipeline.config import CLS_ONNX_PATH, CLS_ONNX_PROVIDERS, create_onnx_session as _mk
+        cls_sess = _mk("classifier", CLS_ONNX_PATH, CLS_ONNX_PROVIDERS)
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"failed to open video: {video_path}")
@@ -233,46 +201,40 @@ def run_video(
             prev_kps = kps if kps is not None else prev_kps
 
             # -------- 3) frame-mode (image ONNX): immediate infer --------
-            # If Torch is not available, force frame-mode even when clip_len>1 (ONNX expects 4D input)
-            if clip_len <= 1 or torch_runner is None:
+            if clip_len <= 1:
                 iname = input_name or cls_sess.get_inputs()[0].name
                 from .pipeline.config import TTA_FLIP as _TTA
-                if torch_runner is not None:
-                    _, probs_all = torch_runner.infer_clip([aligned], size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
-                    p0 = float(probs_all[_FAKE_IDX_IMAGE_CFG]) if len(probs_all) > _FAKE_IDX_IMAGE_CFG else float(probs_all[0])
-                    if _TTA:
-                        aligned_fl = cv2.flip(aligned, 1)
-                        _, probs_fl = torch_runner.infer_clip([aligned_fl], size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
-                        p1 = float(probs_fl[_FAKE_IDX_IMAGE_CFG]) if len(probs_fl) > _FAKE_IDX_IMAGE_CFG else float(probs_fl[0])
-                        fake_prob = 0.5 * (p0 + p1)
-                    else:
-                        fake_prob = p0
-                else:
-                    inp = preprocess_image(
-                        aligned,
-                        size=align_size,
-                        rgb=rgb,
-                        mean=mean,
-                        std=std,
-                    )  # (1,3,H,W)
-                    _log_preproc("frame", inp)
-                    if inp.ndim == 5:
-                        N, T, C, H, W = inp.shape
-                        inp = inp.reshape(N * T, C, H, W)
-                    out = cls_sess.run(None, {iname: inp})[0]
-                    probs_vec = _to_probs(out)
-                    fake_prob = float(probs_vec[_FAKE_IDX_IMAGE_CFG])
-                    if _TTA:
-                        aligned_fl = cv2.flip(aligned, 1)
-                        inp_fl = preprocess_image(aligned_fl, size=align_size, rgb=rgb, mean=mean, std=std)
-                        _log_preproc("frame", inp_fl)
-                        if inp_fl.ndim == 5:
-                            N, T, C, H, W = inp_fl.shape
-                            inp_fl = inp_fl.reshape(N * T, C, H, W)
-                        out_fl = cls_sess.run(None, {iname: inp_fl})[0]
-                        probs_fl = _to_probs(out_fl)
-                        p1 = float(probs_fl[_FAKE_IDX_IMAGE_CFG])
-                        fake_prob = 0.5 * (fake_prob + p1)
+                inp = preprocess_image(
+                    aligned,
+                    size=align_size,
+                    rgb=rgb,
+                    mean=mean,
+                    std=std,
+                )  # (1,3,H,W)
+                _log_preproc("frame", inp)
+                if inp.ndim == 5:
+                    N, T, C, H, W = inp.shape
+                    inp = inp.reshape(N * T, C, H, W)
+                out = cls_sess.run(None, {iname: inp})[0]
+                probs_vec = _to_probs(out)
+                fake_prob = float(
+                    probs_vec[FAKE_IDX_IMAGE]
+                    if len(probs_vec) > FAKE_IDX_IMAGE else probs_vec[0]
+                )
+                if _TTA:
+                    aligned_fl = cv2.flip(aligned, 1)
+                    inp_fl = preprocess_image(aligned_fl, size=align_size, rgb=rgb, mean=mean, std=std)
+                    _log_preproc("frame", inp_fl)
+                    if inp_fl.ndim == 5:
+                        N, T, C, H, W = inp_fl.shape
+                        inp_fl = inp_fl.reshape(N * T, C, H, W)
+                    out_fl = cls_sess.run(None, {iname: inp_fl})[0]
+                    probs_fl = _to_probs(out_fl)
+                    p1 = float(
+                        probs_fl[FAKE_IDX_IMAGE]
+                        if len(probs_fl) > FAKE_IDX_IMAGE else probs_fl[0]
+                    )
+                    fake_prob = 0.5 * (fake_prob + p1)
                 # gating by face size / det score
                 from .pipeline.config import MIN_FACE as _MIN_FACE, MIN_DET_SCORE as _MIN_S
                 _sz = face_sizes[-1] if len(face_sizes) else None
@@ -289,25 +251,16 @@ def run_video(
         # -------- 4) clip-mode (for temporal models) --------
         # Only run temporal clip-mode when the model expects 5D (clip_len > 1).
         # For image models (clip_len <= 1), skip this path to avoid feeding 5D to 4D inputs.
-        if clip_len > 1 and torch_runner is not None and len(buffer) == clip_len and ((sampled % clip_stride) == 0):
-            from .pipeline.config import TTA_FLIP as _TTA
-            if torch_runner is not None:
-                _, probs_all = torch_runner.infer_clip(list(buffer), size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
-                p0 = float(probs_all[_FAKE_IDX_CLIP_CFG]) if len(probs_all) > _FAKE_IDX_CLIP_CFG else float(probs_all[0])
-                if _TTA:
-                    buf_fl = [cv2.flip(f, 1) for f in list(buffer)]
-                    _, probs_fl = torch_runner.infer_clip(buf_fl, size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
-                    p1 = float(probs_fl[_FAKE_IDX_CLIP_CFG]) if len(probs_fl) > _FAKE_IDX_CLIP_CFG else float(probs_fl[0])
-                    fake_prob = 0.5 * (p0 + p1)
-                else:
-                    fake_prob = p0
-            else:
-                inp = preprocess_frames(list(buffer), size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
-                _log_preproc("clip", inp)
-                iname = input_name or cls_sess.get_inputs()[0].name
-                out = cls_sess.run(None, {iname: inp})[0]
-                probs_vec = _to_probs(out)
-                fake_prob = float(probs_vec[_FAKE_IDX_CLIP_CFG])
+        if clip_len > 1 and len(buffer) == clip_len and ((sampled % clip_stride) == 0):
+            inp = preprocess_frames(list(buffer), size=align_size, layout=layout, rgb=rgb, mean=mean, std=std)
+            _log_preproc("clip", inp)
+            iname = input_name or cls_sess.get_inputs()[0].name
+            out = cls_sess.run(None, {iname: inp})[0]
+            probs_vec = _to_probs(out)
+            fake_prob = float(
+                probs_vec[FAKE_IDX_CLIP]
+                if len(probs_vec) > FAKE_IDX_CLIP else probs_vec[0]
+            )
             # gating for clip (use last measured size/score as proxy)
             from .pipeline.config import MIN_FACE as _MIN_FACE, MIN_DET_SCORE as _MIN_S
             _sz = face_sizes[-1] if len(face_sizes) else None
@@ -334,7 +287,10 @@ def run_video(
         _log_preproc("frame", inp)
         out = cls_sess.run(None, {iname: inp})[0]
         probs_vec = _to_probs(out)
-        p_fake = float(probs_vec[_FAKE_IDX_IMAGE_CFG])
+        p_fake = float(
+            probs_vec[FAKE_IDX_IMAGE]
+            if len(probs_vec) > FAKE_IDX_IMAGE else probs_vec[0]
+        )
         probs.append(p_fake)
         prob_series.append(p_fake)
         infer_cnt += 1
@@ -581,9 +537,11 @@ def run_image(
         inp = preprocess_image(aligned, size=align_size, rgb=rgb, mean=mean, std=std)
         _log_preproc("frame", inp)
         out = cls_sess.run(None, {iname: inp})[0]
-        from .pipeline.config import FAKE_IDX_IMAGE as _IMG_FAKE_IDX
         probs_vec = _to_probs(out)
-        fake_prob = float(probs_vec[_IMG_FAKE_IDX])
+        fake_prob = float(
+            probs_vec[FAKE_IDX_IMAGE]
+            if len(probs_vec) > FAKE_IDX_IMAGE else probs_vec[0]
+        )
     else:
         return {
             "ok": False,

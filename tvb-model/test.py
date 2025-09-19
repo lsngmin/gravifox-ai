@@ -8,7 +8,7 @@ import tf_keras
 
 model = tf_keras.models.load_model("Xception")
 
-image_path = "ex/t1.jpg"  # 테스트할 이미지 파일 경로
+image_path = "../tvb-server/t1.jpg"  # 테스트할 이미지 파일 경로
 
 
 # 1. 이미지 로드 및 전처리
