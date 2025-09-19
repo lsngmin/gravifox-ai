@@ -16,6 +16,21 @@ from .config import (
     LOG_MODEL_OUTPUT,
     FAKE_IDX_IMAGE,
     FAKE_IDX_CLIP,
+    CLS_ONNX_PATH,
+    CLS_ONNX_PROVIDERS,
+    create_onnx_session,
+    CROP_MARGIN,
+    DISABLE_ALIGN_WARP,
+    TTA_FLIP,
+    MIN_FACE,
+    MIN_DET_SCORE,
+    EWMA_ALPHA,
+    AGGREGATOR,
+    TOPK_RATIO,
+    TRIM_RATIO,
+    SEG_THRESHOLD,
+    SEG_MIN_LEN,
+    ATTACH_FACES,
 )
 from pathlib import Path
 
@@ -163,11 +178,10 @@ def run_video(
             y2 = int(max(0, min(h - 1, y2)))
             bbox_size = float(max(1.0, min(x2 - x1, y2 - y1)))
 
-                from .config import CROP_MARGIN as _CROP_MARGIN, DISABLE_ALIGN_WARP as _DISABLE_WARP
-            if kps is not None and not _DISABLE_WARP:
+            if kps is not None and not DISABLE_ALIGN_WARP:
                 aligned = warp_by_5pts(frame, kps, (align_size, align_size))
             else:
-                pad = int(_CROP_MARGIN * max(y2 - y1, x2 - x1))
+                pad = int(CROP_MARGIN * max(y2 - y1, x2 - x1))
                 xx1 = max(0, x1 - pad); yy1 = max(0, y1 - pad)
                 xx2 = min(w, x2 + pad); yy2 = min(h, y2 + pad)
                 crop = frame[yy1:yy2, xx1:xx2]
@@ -203,7 +217,6 @@ def run_video(
             # -------- 3) frame-mode (image ONNX): immediate infer --------
             if clip_len <= 1:
                 iname = input_name or cls_sess.get_inputs()[0].name
-                from .config import TTA_FLIP as _TTA
                 inp = preprocess_image(
                     aligned,
                     size=align_size,
@@ -221,7 +234,7 @@ def run_video(
                     probs_vec[FAKE_IDX_IMAGE]
                     if len(probs_vec) > FAKE_IDX_IMAGE else probs_vec[0]
                 )
-                if _TTA:
+                if TTA_FLIP:
                     aligned_fl = cv2.flip(aligned, 1)
                     inp_fl = preprocess_image(aligned_fl, size=align_size, rgb=rgb, mean=mean, std=std)
                     _log_preproc("frame", inp_fl)
@@ -229,17 +242,16 @@ def run_video(
                         N, T, C, H, W = inp_fl.shape
                         inp_fl = inp_fl.reshape(N * T, C, H, W)
                     out_fl = cls_sess.run(None, {iname: inp_fl})[0]
-                    probs_fl = _to_probs(out_fl)
-                    p1 = float(
-                        probs_fl[FAKE_IDX_IMAGE]
-                        if len(probs_fl) > FAKE_IDX_IMAGE else probs_fl[0]
-                    )
+                        probs_fl = _to_probs(out_fl)
+                        p1 = float(
+                            probs_fl[FAKE_IDX_IMAGE]
+                            if len(probs_fl) > FAKE_IDX_IMAGE else probs_fl[0]
+                        )
                     fake_prob = 0.5 * (fake_prob + p1)
                 # gating by face size / det score
-                from .config import MIN_FACE as _MIN_FACE, MIN_DET_SCORE as _MIN_S
                 _sz = face_sizes[-1] if len(face_sizes) else None
                 _sc = det_scores[-1] if len(det_scores) else None
-                if ((_sz is None or _sz >= _MIN_FACE) and (_sc is None or _sc >= _MIN_S)):
+                if ((_sz is None or _sz >= MIN_FACE) and (_sc is None or _sc >= MIN_DET_SCORE)):
                     probs.append(fake_prob)
                     prob_series.append(fake_prob)
                     used_faces.append(aligned.copy())
@@ -262,10 +274,9 @@ def run_video(
                 if len(probs_vec) > FAKE_IDX_CLIP else probs_vec[0]
             )
             # gating for clip (use last measured size/score as proxy)
-            from .config import MIN_FACE as _MIN_FACE, MIN_DET_SCORE as _MIN_S
             _sz = face_sizes[-1] if len(face_sizes) else None
             _sc = det_scores[-1] if len(det_scores) else None
-            if ((_sz is None or _sz >= _MIN_FACE) and (_sc is None or _sc >= _MIN_S)):
+            if ((_sz is None or _sz >= MIN_FACE) and (_sc is None or _sc >= MIN_DET_SCORE)):
                 probs.append(fake_prob)
                 prob_series.append(fake_prob)
                 try:
@@ -307,11 +318,10 @@ def run_video(
         }
 
     # optional EWMA smoothing before aggregation
-    from .config import EWMA_ALPHA as _EWMA_ALPHA
     probs_raw = list(probs)
-    if _EWMA_ALPHA is not None and 0.0 < _EWMA_ALPHA < 1.0 and len(probs) > 1:
+    if EWMA_ALPHA is not None and 0.0 < EWMA_ALPHA < 1.0 and len(probs) > 1:
         sm = []
-        a = float(_EWMA_ALPHA)
+        a = float(EWMA_ALPHA)
         m = float(probs[0])
         for v in probs:
             m = a * float(v) + (1.0 - a) * m
@@ -323,7 +333,6 @@ def run_video(
     high_conf_ratio = float(np.mean(probs_arr >= high_conf_threshold))
 
     # Aggregation options
-    from .config import AGGREGATOR, TOPK_RATIO, TRIM_RATIO, SEG_THRESHOLD, SEG_MIN_LEN
     agg_name = AGGREGATOR.lower()
     agg_score = mean_p
     if agg_name == 'median':
@@ -395,9 +404,8 @@ def run_video(
     exemplars = [{"idx": int(i), "prob": float(probs_arr[i])} for i in top_idx]
 
     # attach face thumbnails (base64)
-    from .config import ATTACH_FACES as _ATTACH_FACES
     samples_b64 = []
-    for i in top_idx[:max(0, _ATTACH_FACES)]:
+    for i in top_idx[:max(0, ATTACH_FACES)]:
         if 0 <= i < len(used_faces):
             try:
                 ok, enc = cv2.imencode('.jpg', used_faces[i], [int(cv2.IMWRITE_JPEG_QUALITY), 85])
@@ -433,7 +441,7 @@ def run_video(
         "frames_total": total,
         # timeline/evidence
         "probs_timeline": [round(float(x), 4) for x in prob_series],
-        "probs_ewma": ([round(float(x), 4) for x in probs] if _EWMA_ALPHA is not None and len(probs_raw) == len(probs) else None),
+        "probs_ewma": ([round(float(x), 4) for x in probs] if EWMA_ALPHA is not None and len(probs_raw) == len(probs) else None),
         "quantiles": {"p50": round(q50, 4), "p75": round(q75, 4), "p90": round(q90, 4), "p95": round(q95, 4), "max": round(float(np.max(probs_arr)), 4)},
         "exemplars": exemplars,
         "segments": segments,
@@ -510,11 +518,10 @@ def run_image(
         x2 = int(max(0, min(w - 1, x2)))
         y2 = int(max(0, min(h - 1, y2)))
         bbox_size = float(max(1.0, min(x2 - x1, y2 - y1)))
-            from .config import CROP_MARGIN as _CROP_MARGIN, DISABLE_ALIGN_WARP as _DISABLE_WARP
-        if kps is not None and not _DISABLE_WARP:
-            aligned = warp_by_5pts(frame, kps, (align_size, align_size))
-        else:
-            pad = int(_CROP_MARGIN * max(y2 - y1, x2 - x1))
+            if kps is not None and not DISABLE_ALIGN_WARP:
+                aligned = warp_by_5pts(frame, kps, (align_size, align_size))
+            else:
+                pad = int(CROP_MARGIN * max(y2 - y1, x2 - x1))
             xx1 = max(0, x1 - pad); yy1 = max(0, y1 - pad)
             xx2 = min(w, x2 + pad); yy2 = min(h, y2 + pad)
             crop = frame[yy1:yy2, xx1:xx2]
@@ -627,8 +634,6 @@ def run_media(
         return run_image(path, det_sess, cls_sess, **kwargs)
     # default as video
     return run_video(path, det_sess, cls_sess, **kwargs)
-
-from .config import *
 
 def main():
     # sessions
