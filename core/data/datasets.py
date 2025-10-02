@@ -11,9 +11,32 @@ from torchvision import datasets, transforms
 
 from core.data.transforms_sns import AugConfig, generate_sns_augmentations
 from core.utils.logger import get_logger
+from PIL import Image, UnidentifiedImageError
 
 
 logger = get_logger(__name__)
+
+
+def safe_loader(path: str) -> Image.Image:
+    """깨진 이미지를 만나도 학습이 중단되지 않도록 안전하게 로드한다.
+
+    무엇을/왜:
+        PIL 로딩 단계에서 UnidentifiedImageError, OSError 등이 발생하는 경우가 있어
+        학습이 중단될 수 있다. 이 함수는 예외 발생 시 경고 로그를 남기고 1x1 더미
+        이미지를 반환해 학습 루프가 계속 진행되도록 한다.
+
+    Args:
+        path: 이미지 파일 경로
+
+    Returns:
+        RGB PIL.Image (정상 로드되면 원본, 실패 시 1x1 더미)
+    """
+
+    try:
+        return Image.open(path).convert("RGB")
+    except (UnidentifiedImageError, OSError, ValueError) as e:
+        logger.warning("⚠️ Skipping corrupted image: %s (%s)", path, str(e))
+        return Image.new("RGB", (1, 1))
 
 
 def _verify_directory(path: Path) -> None:
@@ -83,7 +106,7 @@ def build_dataloader(
 
     train_tf, val_tf = _build_transforms(img_size, use_sns_aug, aug_cfg)
 
-    train_dataset = datasets.ImageFolder(str(train_path), transform=train_tf)
+    train_dataset = datasets.ImageFolder(str(train_path), transform=train_tf, loader=safe_loader)
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -96,7 +119,7 @@ def build_dataloader(
     class_names = train_dataset.classes
 
     if val_path is not None:
-        val_dataset = datasets.ImageFolder(str(val_path), transform=val_tf)
+        val_dataset = datasets.ImageFolder(str(val_path), transform=val_tf, loader=safe_loader)
         val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size,
@@ -118,4 +141,3 @@ def build_dataloader(
         )
 
     return train_loader, val_loader, class_names
-
