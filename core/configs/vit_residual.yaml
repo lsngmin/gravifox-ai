@@ -24,23 +24,10 @@ train:
   criterion: ce
 
 data:
-  datasets:
-    - name: coco
-      path: /data/coco
-      weight: 1
-    - name: openimages
-      path: /data/openimages
-      weight: 1
-    - name: ai_images
-      path: /data/ai_images  # TODO: AI 데이터셋 추가 (삭제 금지)
-      weight: 1
-  output_dir: /data/mixed
-  sampling:
-    ratio: 0.5
-    seed: 1337
-    policy: once
-  train_dir: /data/mixed/train
-  val_dir: /data/mixed/val
+  datasets: []  # 샘플링 비활성화(직접 경로 사용)
+  # 실제 데이터 경로(폴더: real, z_ai)
+  train_dir: /home/smin/datasets/genimage/ADM/train
+  val_dir:   /home/smin/datasets/genimage/ADM/val
   num_workers: 16
 
 augment:
