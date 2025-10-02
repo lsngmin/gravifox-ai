@@ -46,6 +46,23 @@ class Trainer:
         self.cfg = cfg
 
         self.accel = Accelerator(mixed_precision=cfg.mixed_precision or "no", gradient_accumulation_steps=cfg.grad_accum_steps)
+        # 멀티 GPU 활성 여부와 장치 정보를 짧게 로그(가벼운 확인용)
+        try:
+            gpu_cnt = torch.cuda.device_count()
+        except Exception:
+            gpu_cnt = 0
+        world = getattr(self.accel.state, "num_processes", 1)
+        device = str(getattr(self.accel, "device", "cpu"))
+        per_proc_bs = getattr(train_loader, "batch_size", None)
+        global_bs = (per_proc_bs * world) if isinstance(per_proc_bs, int) else None
+        logger.info(
+            "Accelerate 초기화 - processes=%d, device=%s, cuda_devices=%d, per_proc_bs=%s, global_bs=%s",
+            world,
+            device,
+            gpu_cnt,
+            str(per_proc_bs),
+            str(global_bs),
+        )
         self.criterion = self._build_criterion(cfg.criterion)
         self.optimizer = create_optimizer(self.model.parameters(), name=cfg.optimizer, lr=cfg.lr, weight_decay=cfg.weight_decay)
         self.scheduler = self._build_scheduler()
