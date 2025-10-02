@@ -117,9 +117,16 @@ def _resample_chain(image: Image.Image) -> Tuple[Image.Image, str]:
 
 
 def _apply_noise_and_blur(image: Image.Image, cfg: AugConfig) -> Tuple[Image.Image, str]:
-    """노이즈와 블러를 추가하여 촬영/압축 노이즈를 흉내낸다."""
+    """노이즈와 블러를 추가하여 촬영/압축 노이즈를 흉내낸다.
+
+    - 가우시안 노이즈를 추가하고, 확률적으로 가우시안 블러를 적용한다.
+    - 별도로 평균/가우시안 커널 기반의 정사각형 커널 블러를 적용한다.
+      커널 크기는 3/5/7 중 랜덤 선택하며, ImageFilter.Kernel의 요건에 맞게
+      (k, k) 크기와 길이 k*k의 커널 리스트를 전달한다.
+    """
 
     ops: List[str] = []
+    # 1) 노이즈 추가
     sigma = random.uniform(*cfg.noise_sigma)
     arr = np.array(image).astype(np.float32)
     if sigma > 0:
@@ -128,15 +135,32 @@ def _apply_noise_and_blur(image: Image.Image, cfg: AugConfig) -> Tuple[Image.Ima
         ops.append(f"gaussian_noise_{sigma:.2f}")
     result = Image.fromarray(arr.astype(np.uint8)).convert("RGB")
 
+    # 2) 가우시안 블러(반지름 기반)
     if random.random() < 0.5:
         radius = random.uniform(1.0, 3.0)
         result = result.filter(ImageFilter.GaussianBlur(radius=radius))
         ops.append(f"gaussian_blur_{radius:.1f}")
+
+    # 3) 커널 블러(정사각형, 홀수 크기)
     if random.random() < 0.3:
-        k = random.choice([3, 5, 7, 9])
-        kernel = [1.0 / k] * k
-        result = result.filter(ImageFilter.Kernel((k, 1), kernel, scale=None))
-        ops.append(f"motion_blur_{k}")
+        k = random.choice([3, 5, 7])
+        if random.random() < 0.5:
+            # 평균 블러: 모든 원소 1/(k*k)
+            kernel = np.ones((k, k), dtype=np.float32) / float(k * k)
+            kind = "avg"
+        else:
+            # 간단 가우시안 커널 생성 후 정규화
+            x = np.linspace(-1.0, 1.0, k)
+            xv, yv = np.meshgrid(x, x)
+            sigma_k = 0.5
+            g = np.exp(-(xv**2 + yv**2) / (2.0 * sigma_k**2))
+            kernel = (g / g.sum()).astype(np.float32)
+            kind = "gauss"
+        kernel_list = kernel.reshape(-1).tolist()
+        # scale은 커널 합으로 설정(이미 1.0에 가깝지만 안전하게 합 사용)
+        result = result.filter(ImageFilter.Kernel(size=(k, k), kernel=kernel_list, scale=float(sum(kernel_list))))
+        ops.append(f"kernel_blur_{kind}_{k}x{k}")
+
     return result, ",".join(ops)
 
 
@@ -250,4 +274,3 @@ def debug_augment(input_path: str, output_path: str) -> None:
     augmented.save(output_path)
     ops = getattr(augmenter, "last_ops", [])
     logger.info("SNS 증강 체인: %s", ", ".join(ops))
-
