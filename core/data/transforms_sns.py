@@ -119,10 +119,12 @@ def _resample_chain(image: Image.Image) -> Tuple[Image.Image, str]:
 def _apply_noise_and_blur(image: Image.Image, cfg: AugConfig) -> Tuple[Image.Image, str]:
     """노이즈와 블러를 추가하여 촬영/압축 노이즈를 흉내낸다.
 
-    - 가우시안 노이즈를 추가하고, 확률적으로 가우시안 블러를 적용한다.
-    - 별도로 평균/가우시안 커널 기반의 정사각형 커널 블러를 적용한다.
-      커널 크기는 3/5/7 중 랜덤 선택하며, ImageFilter.Kernel의 요건에 맞게
-      (k, k) 크기와 길이 k*k의 커널 리스트를 전달한다.
+    - 가우시안 노이즈를 추가하고, 확률적으로 블러를 적용한다.
+    - 블러는 두 가지 중 하나:
+      (1) 가우시안 블러(radius 기반)
+      (2) 모션 블러(수평/수직) — PIL의 2D Kernel 규격을 만족하도록 (k,k) 정사각 커널과 길이 k*k 리스트 사용
+        가운데 행/열에 1/k를 채워 평균화하도록 구성(Scale=1.0로 안정화)
+    - 커널/합성 실패 시에는 GaussianBlur(1.0)으로 안전 폴백.
     """
 
     ops: List[str] = []
@@ -135,31 +137,33 @@ def _apply_noise_and_blur(image: Image.Image, cfg: AugConfig) -> Tuple[Image.Ima
         ops.append(f"gaussian_noise_{sigma:.2f}")
     result = Image.fromarray(arr.astype(np.uint8)).convert("RGB")
 
-    # 2) 가우시안 블러(반지름 기반)
-    if random.random() < 0.5:
-        radius = random.uniform(1.0, 3.0)
-        result = result.filter(ImageFilter.GaussianBlur(radius=radius))
-        ops.append(f"gaussian_blur_{radius:.1f}")
-
-    # 3) 커널 블러(정사각형, 홀수 크기)
-    if random.random() < 0.3:
-        k = random.choice([3, 5, 7])
-        if random.random() < 0.5:
-            # 평균 블러: 모든 원소 1/(k*k)
-            kernel = np.ones((k, k), dtype=np.float32) / float(k * k)
-            kind = "avg"
+    # 2) 블러: 모션/가우시안 중 선택
+    try:
+        use_motion = random.random() < 0.5
+        if use_motion:
+            # 모션 블러: k는 홀수, 수평/수직 랜덤 선택
+            k = random.choice([3, 5, 7, 9])
+            kernel = [0.0] * (k * k)
+            direction = random.choice(["h", "v"])  # h: 수평, v: 수직
+            if direction == "h":
+                row = k // 2
+                for c in range(k):
+                    kernel[row * k + c] = 1.0 / k
+            else:
+                col = k // 2
+                for r in range(k):
+                    kernel[r * k + col] = 1.0 / k
+            result = result.filter(ImageFilter.Kernel(size=(k, k), kernel=kernel, scale=1.0))
+            ops.append(f"motion_blur_{direction}_k{k}")
         else:
-            # 간단 가우시안 커널 생성 후 정규화
-            x = np.linspace(-1.0, 1.0, k)
-            xv, yv = np.meshgrid(x, x)
-            sigma_k = 0.5
-            g = np.exp(-(xv**2 + yv**2) / (2.0 * sigma_k**2))
-            kernel = (g / g.sum()).astype(np.float32)
-            kind = "gauss"
-        kernel_list = kernel.reshape(-1).tolist()
-        # scale은 커널 합으로 설정(이미 1.0에 가깝지만 안전하게 합 사용)
-        result = result.filter(ImageFilter.Kernel(size=(k, k), kernel=kernel_list, scale=float(sum(kernel_list))))
-        ops.append(f"kernel_blur_{kind}_{k}x{k}")
+            # 가우시안 블러: 반지름 0.5~2.0
+            radius = random.uniform(0.5, 2.0)
+            result = result.filter(ImageFilter.GaussianBlur(radius=radius))
+            ops.append(f"gaussian_blur_{radius:.2f}")
+    except Exception:
+        # 실패 시 안전 폴백
+        result = result.filter(ImageFilter.GaussianBlur(radius=1.0))
+        ops.append("gaussian_blur_fallback")
 
     return result, ",".join(ops)
 
