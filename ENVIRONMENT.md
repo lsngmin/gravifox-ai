@@ -35,17 +35,14 @@ uvicorn tvb-ai.tvb-server.app:app --reload
 python3 tvb-ai/tvb-server/worker.py
 ```
 
-## RabbitMQ / AWS MQ 설정
-FastAPI 및 워커는 `RABBITMQ_URL` 과 관련 플래그를 통해 브로커에 연결합니다. (이 부분은 기존과 동일하게 환경 변수로 관리합니다.)
+## RabbitMQ 설정 (로컬 AI 서버)
+FastAPI 및 워커는 `settings.py`의 `RABBITMQ_URL`을 사용합니다. 현재 기본값은 AI 서버(117.17.149.66) 5000 포트, 자격증명 포함으로 설정되어 있습니다.
 
-- `RABBITMQ_URL`: `amqp://` 또는 `amqps://` 형식의 연결 문자열
-- `RABBITMQ_USE_TLS`: `true/false` (기본값: URL이 `amqps://`이면 자동 활성화)
-- `RABBITMQ_CA_FILE`: TLS 검증에 사용할 CA PEM 경로 (미지정 시 시스템 기본 CA 사용)
-- `RABBITMQ_CERT_FILE` / `RABBITMQ_KEY_FILE`: 상호 TLS가 필요할 때 클라이언트 인증서/키 경로
-- `RABBITMQ_VERIFY_PEER`: `false`로 설정하면 서버 인증서 검증을 비활성화 (기본값: 검증 활성)
+- `RABBITMQ_URL`: `amqp://gravifox:!Tmdals017217@117.17.149.66:5000/`
+- `RABBITMQ_USE_TLS`: URL이 `amqps://`가 아니므로 비TLS. TLS 필요 시 `amqps://`로 교체 후 CA/검증 옵션 적용
 - `RABBITMQ_PREFETCH`: 소비자 채널 prefetch 값 (기본 10)
 
 ## 동시 처리(Concurrency)
 - `TVB_MAX_CONCURRENCY`: 동시에 처리할 분석 작업 수(기본 1). FastAPI에서 큐로 작업을 넘길 때 사용할 수 있으며 필요 시 환경 변수로 설정합니다.
 
-Spring Boot 측은 `SPRING_RABBITMQ_*` 환경 변수(또는 `application-*.yml`)로 동일한 엔드포인트를 바라보도록 맞춰야 합니다. 테스트 프로필을 사용할 경우 `SPRING_RABBITMQ_SSL_ENABLED=true`, `SPRING_RABBITMQ_PORT=5671`, `SPRING_RABBITMQ_TRUST_STORE=/path/to/amazon-ca.jks` 등을 함께 지정하세요.
+Spring Boot(dev/test)는 `application-dev.yml`, `application-test.yml`에서 AI 서버 MQ(117.17.149.66:5000, TLS 비활성)로 설정되어 있습니다. 필요 시 `SPRING_RABBITMQ_*` 환경 변수로 덮어쓸 수 있습니다.
