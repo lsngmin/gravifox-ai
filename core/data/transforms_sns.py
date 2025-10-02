@@ -183,22 +183,38 @@ def _apply_tone(image: Image.Image, cfg: AugConfig) -> Tuple[Image.Image, str]:
 
 
 def _add_watermark(image: Image.Image, cfg: AugConfig) -> Tuple[Image.Image, str]:
-    """작은 워터마크/스티커를 합성하여 SNS 공유 상황을 모사한다."""
+    """작은 워터마크/스티커를 합성하여 SNS 공유 상황을 모사한다.
+
+    - alpha_composite는 두 이미지를 같은 크기·같은 모드(RGBA)여야 합성 가능하다.
+    - 따라서 base 이미지를 RGBA로 통일하고, overlay는 항상 동일 크기의 RGBA 캔버스로 만든다.
+    - 필요 시 overlay를 최종적으로 resize하여 크기 불일치를 방지한다.
+    """
 
     if random.random() > 0.1:
         return image, "watermark_skip"
 
-    overlay = image.copy()
+    # 1) 합성용 base 이미지를 RGBA로 확보(불필요한 변환 최소화)
+    base_rgba = image.convert("RGBA") if image.mode != "RGBA" else image.copy()
+
+    # 2) overlay는 동일 크기의 완전 투명 RGBA 캔버스로 생성
+    overlay = Image.new("RGBA", base_rgba.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay, "RGBA")
-    w, h = image.size
+
+    w, h = base_rgba.size
     box_w = int(w * random.uniform(0.1, 0.2))
     box_h = int(h * random.uniform(0.05, 0.12))
-    x = random.randint(0, w - box_w)
-    y = random.randint(0, h - box_h)
+    x = random.randint(0, max(0, w - box_w))
+    y = random.randint(0, max(0, h - box_h))
     alpha = int(random.uniform(*cfg.watermark_alpha) * 255)
     color = (255, 255, 255, alpha)
     draw.rounded_rectangle((x, y, x + box_w, y + box_h), radius=8, fill=color)
-    blended = Image.alpha_composite(image.convert("RGBA"), overlay)
+
+    # 3) 안전장치: overlay 크기가 달라졌다면 base와 동일하게 리사이즈
+    if overlay.size != base_rgba.size:
+        overlay = overlay.resize(base_rgba.size, Image.LANCZOS)
+
+    # 4) RGBA 동일 크기에서 합성 수행 후 RGB로 반환
+    blended = Image.alpha_composite(base_rgba, overlay)
     return blended.convert("RGB"), f"watermark_{box_w}x{box_h}_alpha{alpha}"
 
 
