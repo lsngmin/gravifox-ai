@@ -1,4 +1,9 @@
-"""SNS 재압축 환경에서 강건한 잔차 브랜치 추출기."""
+"""SNS 재압축 환경에서 강건한 잔차 브랜치 추출기와 간단 CNN 모델.
+
+이 파일은 두 가지 용도를 모두 지원한다.
+1) ResidualBranchExtractor: ViT 결합용 잔차 임베딩 추출기(기존 파이프라인 호환)
+2) ResidualCNN: 단독 학습/검증을 위한 경량 CNN 임베더(Residual 모델)
+"""
 
 from __future__ import annotations
 
@@ -9,6 +14,7 @@ import torch
 import torch.nn as nn
 
 from core.utils.logger import get_logger
+from .registry import register
 
 
 logger = get_logger(__name__)
@@ -79,3 +85,53 @@ class ResidualBranchExtractor(nn.Module):
         embedding = self.proj(flattened)
         return embedding
 
+
+class ResidualCNN(nn.Module):
+    """간단한 2-Conv CNN으로 임베딩을 생성하는 경량 모델.
+
+    무엇을/왜:
+        기본 RGB 이미지를 입력으로 받아 두 번의 3x3 Conv와 ReLU를 거친 뒤
+        AdaptiveAvgPool로 공간 평균을 내어 고정 길이 임베딩을 만듭니다.
+        Residual 단독 모델 실험을 빠르게 수행하기 위한 용도입니다.
+
+    Args:
+        in_channels: 입력 채널 수(기본 3)
+        embed_dim: 출력 임베딩 차원
+
+    Returns:
+        forward(x): [B, embed_dim] 텐서
+    """
+
+    def __init__(self, in_channels: int = 3, embed_dim: int = 128):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, embed_dim, kernel_size=3, stride=1, padding=1),
+        )
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv(x)  # [B, embed_dim, H, W]
+        x = self.pool(x).view(x.size(0), -1)  # [B, embed_dim]
+        return x
+
+
+@register("residual")
+def build_vit_residual(**cfg) -> ResidualCNN:
+    """ResidualCNN 빌더 함수.
+
+    무엇을/왜:
+        YAML 또는 Trainer에서 전달된 설정으로 ResidualCNN을 생성합니다.
+
+    Args:
+        cfg: in_channels, embed_dim 등을 포함하는 설정 딕셔너리
+
+    Returns:
+        ResidualCNN 인스턴스
+    """
+
+    in_channels = int(cfg.get("in_channels", 3))
+    embed_dim = int(cfg.get("embed_dim", 128))
+    logger.debug("ResidualCNN 빌드 - in_channels=%d, embed_dim=%d", in_channels, embed_dim)
+    return ResidualCNN(in_channels=in_channels, embed_dim=embed_dim)
