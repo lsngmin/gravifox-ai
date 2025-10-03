@@ -1,18 +1,9 @@
-"""MVP 이미지 진위 판별 모델 학습 스크립트."""
-
 from __future__ import annotations
-
-import argparse
-import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
+import yaml, torch, sys, argparse, logging
 
-import yaml
-
-import torch
-
-import sys
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -21,29 +12,8 @@ from core.data.datasets import AugConfig, build_dataloader
 from core.data.sampler import sample_datasets
 from core.models.registry import get_model
 from core.trainer.engine import TrainCfg, Trainer
-from core.utils.logger import get_logger
+from core.utils.logger import get_logger, add_file_handler
 from core.utils.seed import set_seed
-
-
-def _setup_file_logging(log_dir: Path, level: int) -> None:
-    """파일 핸들러를 추가해 로그를 저장한다.
-
-    Args:
-        log_dir: 로그 파일을 보관할 디렉터리.
-        level: 로깅 레벨.
-
-    Returns:
-        None
-    """
-
-    log_dir.mkdir(parents=True, exist_ok=True)
-    fmt = "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
-    handler = logging.FileHandler(log_dir / "train.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter(fmt))
-    root = logging.getLogger()
-    root.addHandler(handler)
-    root.setLevel(level)
-
 
 def parse_args() -> argparse.Namespace:
     """명령행 인자를 파싱한다.
@@ -52,10 +22,21 @@ def parse_args() -> argparse.Namespace:
         argparse.Namespace 객체.
     """
 
-    parser = argparse.ArgumentParser(description="Real vs GenAI 이미지 분류 학습")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Real vs GenAI 이미지 분류 모델 학습 실행 도구.\n\n"
+            "예시:\n"
+            "  python train.py --config configs/resnet50.yaml\n\n"
+            "주요 기능:\n"
+            " - YAML 설정 기반 학습 파이프라인 실행\n"
+            " - 데이터셋 로드 및 증강(Augment)\n"
+            " - 모델 초기화 및 학습/검증 루프 실행\n"
+            " - 로그 및 체크포인트 저장"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter  # 줄바꿈 보존
+    )
     parser.add_argument("--config", required=True, help="학습 설정 YAML 경로")
     return parser.parse_args()
-
 
 def _prepare_model_kwargs(model_cfg: Dict[str, Any], num_classes: int) -> Dict[str, Any]:
     """모델 빌더에 전달할 인자를 구성한다.
@@ -67,12 +48,7 @@ def _prepare_model_kwargs(model_cfg: Dict[str, Any], num_classes: int) -> Dict[s
     Returns:
         빌더에게 전달할 인자 딕셔너리.
     """
-
-    kwargs = {k: v for k, v in model_cfg.items() if k not in {"name", "residual"}}
-    kwargs.setdefault("num_classes", num_classes)
-    residual_cfg = model_cfg.get("residual", {})
-    if "embed_dim" in residual_cfg:
-        kwargs["residual_embed_dim"] = residual_cfg["embed_dim"]
+    kwargs = {k: v for k, v in model_cfg.items() if k not in {"name"}}
     return kwargs
 
 
@@ -82,7 +58,6 @@ def main() -> None:
     Returns:
         None
     """
-
     args = parse_args()
     with open(args.config, "r", encoding="utf-8") as cfg_file:
         config = yaml.safe_load(cfg_file)
@@ -96,7 +71,7 @@ def main() -> None:
     run_name = f"{config['model']['name']}_{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}"
     run_dir = ROOT / "experiments" / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
-    _setup_file_logging(run_dir / "logs", level)
+    add_file_handler(run_dir / "logs", level)
     logger.info("실험 디렉터리: %s", run_dir)
 
     try:
@@ -139,6 +114,8 @@ def main() -> None:
         raise KeyError("optimizer")
 
     scheduler_cfg = train_cfg.get("scheduler", {})
+    early_cfg = train_cfg.get("early_stopping", {})
+    ckpt_cfg = train_cfg.get("checkpoint", {})
 
     train_settings = TrainCfg(
         epochs=train_cfg["epochs"],
@@ -147,10 +124,21 @@ def main() -> None:
         optimizer=optimizer_cfg.get("name", "adamw"),
         scheduler=scheduler_cfg.get("name", "cosine"),
         warmup_epochs=scheduler_cfg.get("warmup_epochs", 0),
+        sched_factor=scheduler_cfg.get("factor", 0.5),
+        sched_patience=scheduler_cfg.get("patience", 3),
+        sched_min_lr=scheduler_cfg.get("min_lr", 1.0e-6),
+        sched_monitor=scheduler_cfg.get("monitor", "val_loss"),
+        sched_mode=scheduler_cfg.get("mode", "min"),
         mixed_precision=train_cfg.get("mixed_precision"),
         grad_accum_steps=train_cfg.get("grad_accum_steps", 1),
         log_interval=train_cfg.get("log_interval", 50),
         criterion=train_cfg.get("criterion", "ce"),
+        early_stop=early_cfg.get("enabled", False),
+        early_patience=early_cfg.get("patience", 8),
+        early_monitor=early_cfg.get("monitor", "val_loss"),
+        early_mode=early_cfg.get("mode", "min"),
+        ckpt_monitor=ckpt_cfg.get("monitor", "val_acc"),
+        ckpt_mode=ckpt_cfg.get("mode", "max"),
     )
 
     trainer = Trainer(

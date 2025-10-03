@@ -26,13 +26,27 @@ class TrainCfg:
     lr: float = 3e-4
     weight_decay: float = 0.05
     optimizer: str = "adamw"
-    scheduler: str = "cosine"
+    scheduler: str = "cosine"  # "cosine" | "reduce_on_plateau"
     warmup_epochs: int = 0
+    # ReduceLROnPlateau options
+    sched_factor: float = 0.5
+    sched_patience: int = 3
+    sched_min_lr: float = 1e-6
+    sched_monitor: str = "val_loss"  # val_loss | val_acc
+    sched_mode: str = "min"  # min|max
     mixed_precision: Optional[str] = None
     grad_accum_steps: int = 1
     log_interval: int = 50
     save_interval: int = 1
     criterion: str = "ce"
+    # Early stopping
+    early_stop: bool = False
+    early_patience: int = 8
+    early_monitor: str = "val_loss"  # val_loss | val_acc
+    early_mode: str = "min"  # min|max
+    # Checkpoint selection
+    ckpt_monitor: str = "val_acc"  # val_loss | val_acc
+    ckpt_mode: str = "max"  # min|max
 
 
 class Trainer:
@@ -65,6 +79,7 @@ class Trainer:
         )
         self.criterion = self._build_criterion(cfg.criterion)
         self.optimizer = create_optimizer(self.model.parameters(), name=cfg.optimizer, lr=cfg.lr, weight_decay=cfg.weight_decay)
+        self._scheduler_needs_metric = False
         self.scheduler = self._build_scheduler()
 
         if self.scheduler is not None:
@@ -100,7 +115,20 @@ class Trainer:
     def _build_scheduler(self):
         """러닝레이트 스케줄러를 구성한다."""
 
-        if self.cfg.scheduler.lower() != "cosine":
+        name = (self.cfg.scheduler or "").lower()
+        if name in {"reduce_on_plateau", "plateau", "reducelronplateau"}:
+            mode = (self.cfg.sched_mode or "min").lower()
+            self._scheduler_needs_metric = True
+            return torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode=mode,
+                factor=self.cfg.sched_factor,
+                patience=self.cfg.sched_patience,
+                min_lr=self.cfg.sched_min_lr,
+                verbose=True,
+            )
+        if name != "cosine":
+            # no-op scheduler (constant lr)
             return torch.optim.lr_scheduler.LambdaLR(self.optimizer, lambda _: 1.0)
 
         warmup = max(0, self.cfg.warmup_epochs)
@@ -174,11 +202,23 @@ class Trainer:
         ckpt_dir = self.out_dir / "checkpoints"
         ckpt_dir.mkdir(parents=True, exist_ok=True)
 
+        # Monitor configuration
+        monitor_key = "loss" if (self.cfg.ckpt_monitor or "val_acc").lower() == "val_loss" else "acc"
+        ckpt_is_min = (self.cfg.ckpt_mode or "max").lower() == "min"
+        best_value = float("inf") if ckpt_is_min else float("-inf")
+        epochs_no_improve = 0
+
         for epoch in range(1, self.cfg.epochs + 1):
             train_metrics = self._train_one_epoch(epoch)
             val_metrics = self._validate()
             if self.scheduler is not None:
-                self.scheduler.step()
+                if self._scheduler_needs_metric:
+                    # ReduceLROnPlateau expects a scalar metric
+                    metric_key = (self.cfg.sched_monitor or "val_loss").lower()
+                    metric = val_metrics["loss"] if metric_key == "val_loss" else val_metrics["acc"]
+                    self.scheduler.step(metric)
+                else:
+                    self.scheduler.step()
 
             if self.accel.is_main_process:
                 logger.info(
@@ -198,7 +238,22 @@ class Trainer:
                     "val": val_metrics,
                 }
                 save_checkpoint(state, ckpt_dir, filename="last.pt")
-                if val_metrics["acc"] >= self.best_val_acc:
-                    self.best_val_acc = val_metrics["acc"]
+                current = val_metrics[monitor_key]
+                improved = (current < best_value) if ckpt_is_min else (current > best_value)
+                if improved:
+                    best_value = current
                     path = save_checkpoint(state, ckpt_dir, filename="best.pt")
-                    logger.info("새로운 best 체크포인트 저장: %s", path)
+                    logger.info("새로운 best 체크포인트 저장(%s=%s): %s", self.cfg.ckpt_monitor, f"{current:.4f}", path)
+                    epochs_no_improve = 0
+                else:
+                    epochs_no_improve += 1
+
+                # Early stopping check (after checkpointing)
+                if self.cfg.early_stop and epochs_no_improve >= max(1, self.cfg.early_patience):
+                    logger.info(
+                        "Early stopping 발동 - patience=%d, monitor=%s, mode=%s",
+                        self.cfg.early_patience,
+                        self.cfg.early_monitor,
+                        self.cfg.early_mode,
+                    )
+                    break

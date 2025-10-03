@@ -2,25 +2,40 @@ seed: 1337
 
 model:
   name: residual
+  num_classes: 2
   params:
     in_channels: 3
     embed_dim: 128
 
 train:
   img_size: 224
-  batch_size: 768  # per-process batch (A40 2장 → global ~1536)
+  batch_size: 512  # per-process batch (A40 2장 → global 1024)
   epochs: 40
   optimizer:
     name: adamw
-    lr: 1.0e-4
+    lr: 3.0e-4
     weight_decay: 0.05
   scheduler:
-    name: cosine
-    warmup_epochs: 3
+    name: reduce_on_plateau
+    monitor: val_loss
+    patience: 3
+    factor: 0.5
+    min_lr: 1.0e-6
+    mode: min
+    # warmup_epochs는 plateau에서는 사용하지 않음
   grad_accum_steps: 2  # 메모리 여유 없을 때 누적 그라드로 안정화
   mixed_precision: fp16
   log_interval: 50
   criterion: ce
+  early_stopping:
+    enabled: true
+    monitor: val_loss
+    patience: 8
+    mode: min
+  checkpoint:
+    save_best: true
+    monitor: val_loss
+    mode: min
 
 data:
   datasets: []  # 샘플링 비활성화(직접 경로 사용)
@@ -34,9 +49,10 @@ augment:
     jpeg_q: [35, 90]
     webp_q: [35, 90]
     resize_long: [512, 2048]
-    noise_sigma: [0.0, 8.0]
+    noise_sigma: [0.0, 4.0]
     gamma: [0.8, 1.2]
     repeats: [1, 3]
+    watermark_alpha: [0.1, 0.3]
 
 inference:
   multiscale: [224, 336]

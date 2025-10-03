@@ -12,12 +12,16 @@ import functools
 import logging
 import time
 from typing import Any, Callable, Optional, TypeVar, cast
+from pathlib import Path
 
 import coloredlogs
 
 
 _ROOT_INITIALIZED: bool = False
-_DEFAULT_FORMAT = "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
+_DEFAULT_FORMAT = (
+    "%(asctime)s | %(levelname)-8s | %(process)d-%(threadName)s | "
+    "%(name)s | %(filename)s:%(lineno)d | %(funcName)s | %(message)s"
+)
 
 
 def _initialize_root_logger(level: int = logging.INFO) -> None:
@@ -62,6 +66,22 @@ def get_logger(name: str, level: Optional[int] = None) -> logging.Logger:
         logger.setLevel(level)
     return logger
 
+def add_file_handler(log_dir: Path, level: int = logging.INFO) -> None:
+    """파일 핸들러를 추가해 로그를 저장한다.
+
+        Args:
+            log_dir: 로그 파일을 보관할 디렉터리.
+            level: 로깅 레벨.
+
+        Returns:
+            None
+        """
+    log_dir.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(log_dir / "train.log", encoding="utf-8")
+    handler.setFormatter(logging.Formatter(_DEFAULT_FORMAT))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(level)
 
 F = TypeVar("F", bound=Callable[..., Any])
 

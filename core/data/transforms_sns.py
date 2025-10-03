@@ -29,13 +29,13 @@ class AugConfig:
     webp_q: Tuple[int, int] = (35, 90)
     resize_long: Tuple[int, int] = (512, 2048)
     aspect_ratio: Tuple[float, float] = (0.6, 1.8)
-    noise_sigma: Tuple[float, float] = (0.0, 8.0)
+    noise_sigma: Tuple[float, float] = (0.0, 4.0)
     gamma: Tuple[float, float] = (0.8, 1.2)
     contrast: Tuple[float, float] = (0.8, 1.2)
     saturation: Tuple[float, float] = (0.8, 1.2)
     brightness: Tuple[float, float] = (0.85, 1.15)
     repeats: Tuple[int, int] = (1, 3)
-    watermark_alpha: Tuple[float, float] = (0.3, 0.6)
+    watermark_alpha: Tuple[float, float] = (0.1, 0.3)
 
 
 def _random_long_short(size: Tuple[int, int], cfg: AugConfig) -> Tuple[int, int]:
@@ -142,7 +142,8 @@ def _apply_noise_and_blur(image: Image.Image, cfg: AugConfig) -> Tuple[Image.Ima
         use_motion = random.random() < 0.5
         if use_motion:
             # 모션 블러: k는 홀수, 수평/수직 랜덤 선택
-            k = random.choice([3, 5, 7, 9])
+            # 최대 커널 크기 3으로 제한(대형 커널은 학습 불안정 유발)
+            k = 3
             kernel = [0.0] * (k * k)
             direction = random.choice(["h", "v"])  # h: 수평, v: 수직
             if direction == "h":

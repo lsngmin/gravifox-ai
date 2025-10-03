@@ -1,4 +1,4 @@
-experiment:
+₩experiment:
   name: vit_b16_alpha
   output_root: ../../experiments
 seed: 42
