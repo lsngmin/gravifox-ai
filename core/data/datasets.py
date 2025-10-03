@@ -113,6 +113,7 @@ def build_dataloader(
         shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
+        persistent_workers=(num_workers > 0),
         drop_last=True,
     )
 
@@ -126,6 +127,7 @@ def build_dataloader(
             shuffle=False,
             num_workers=num_workers,
             pin_memory=True,
+            persistent_workers=(num_workers > 0),
         )
         logger.info(
             "데이터 로더 구성 완료 - Train=%d, Val=%d, img_size=%d",

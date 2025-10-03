@@ -8,7 +8,7 @@ model:
 
 train:
   img_size: 224
-  batch_size: 256
+  batch_size: 768  # per-process batch (A40 2장 → global ~1536)
   epochs: 40
   optimizer:
     name: adamw
@@ -17,7 +17,7 @@ train:
   scheduler:
     name: cosine
     warmup_epochs: 3
-  grad_accum_steps: 1
+  grad_accum_steps: 2  # 메모리 여유 없을 때 누적 그라드로 안정화
   mixed_precision: fp16
   log_interval: 50
   criterion: ce
@@ -27,7 +27,7 @@ data:
   # 실제 데이터 경로(폴더: real, z_ai)
   train_dir: /home/smin/datasets/genimage/ADM/imagenet_ai_0508_adm/train
   val_dir:   /home/smin/datasets/genimage/ADM/imagenet_ai_0508_adm/val
-  num_workers: 16
+  num_workers: 12
 
 augment:
   sns:
