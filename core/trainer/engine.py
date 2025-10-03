@@ -128,7 +128,10 @@ class Trainer:
                     logits = self.model(images)
                     loss = self.criterion(logits, targets)
                 self.accel.backward(loss)
-                self.accel.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                # Accelerate는 내부적으로 unscale → clip → rescale을 관리한다.
+                # 누적 스텝(accumulation) 중간에는 sync_gradients=False이므로 clip을 건너뛴다.
+                if self.accel.sync_gradients:
+                    self.accel.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
 
