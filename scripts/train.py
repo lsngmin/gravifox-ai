@@ -133,6 +133,7 @@ def main() -> None:
         grad_accum_steps=train_cfg.get("grad_accum_steps", 1),
         log_interval=train_cfg.get("log_interval", 50),
         criterion=train_cfg.get("criterion", "ce"),
+        label_smoothing=float(train_cfg.get("label_smoothing", 0.0) or 0.0),
         early_stop=early_cfg.get("enabled", False),
         early_patience=early_cfg.get("patience", 8),
         early_monitor=early_cfg.get("monitor", "val_loss"),

@@ -39,6 +39,7 @@ class TrainCfg:
     log_interval: int = 50
     save_interval: int = 1
     criterion: str = "ce"
+    label_smoothing: float = 0.0
     # Early stopping
     early_stop: bool = False
     early_patience: int = 8
@@ -110,7 +111,13 @@ class Trainer:
                     return loss
 
             return FocalLoss()
-        return nn.CrossEntropyLoss()
+        # CrossEntropy with optional label smoothing
+        smoothing = float(getattr(self.cfg, "label_smoothing", 0.0) or 0.0)
+        try:
+            return nn.CrossEntropyLoss(label_smoothing=smoothing)
+        except TypeError:
+            # PyTorch < 1.10 호환: label_smoothing 파라미터 미지원 시 기본 CE 사용
+            return nn.CrossEntropyLoss()
 
     def _build_scheduler(self):
         """러닝레이트 스케줄러를 구성한다."""
