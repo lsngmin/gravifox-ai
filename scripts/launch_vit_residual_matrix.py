@@ -6,8 +6,17 @@
     - 옵션으로 각 실험을 순차 실행한다.
 
 사용 예시:
-    python tvb-ai/scripts/launch_vit_residual_matrix.py \
-        --run                         # 생성 후 순차 실행
+    # 설정만 생성
+    python tvb-ai/scripts/launch_vit_residual_matrix.py
+
+    # 생성 후 순차 실행(싱글 GPU)
+    python tvb-ai/scripts/launch_vit_residual_matrix.py --run
+
+    # 멀티 GPU: accelerate로 2GPU 사용
+    python tvb-ai/scripts/launch_vit_residual_matrix.py --run --launcher accelerate --num-proc 2 --gpus 0,1
+
+    # 멀티 GPU: torchrun으로 4GPU 사용
+    python tvb-ai/scripts/launch_vit_residual_matrix.py --run --launcher torchrun --num-proc 4 --gpus 0,1,2,3
 
 생성 위치:
     core/configs/experiments/vit_residual_matrix/
@@ -20,6 +29,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Tuple
 import sys
+import os
 
 import yaml
 
@@ -135,6 +145,24 @@ def main() -> None:
         action="store_true",
         help="생성한 설정으로 순차 학습 실행",
     )
+    parser.add_argument(
+        "--launcher",
+        choices=["python", "accelerate", "torchrun"],
+        default="python",
+        help="학습 실행 런처 선택 (멀티 GPU는 accelerate/torchrun 사용)",
+    )
+    parser.add_argument(
+        "--num-proc",
+        type=int,
+        default=1,
+        help="가동 프로세스/디바이스 수(accelerate/torchrun)",
+    )
+    parser.add_argument(
+        "--gpus",
+        type=str,
+        default=None,
+        help="사용할 GPU 인덱스 목록 (예: '0,1'). 설정 시 CUDA_VISIBLE_DEVICES 적용",
+    )
     args = parser.parse_args()
 
     base_path = Path(args.base_config)
@@ -158,15 +186,37 @@ def main() -> None:
         return
 
     # 순차 실행
+    env = os.environ.copy()
+    if args.gpus:
+        env["CUDA_VISIBLE_DEVICES"] = args.gpus
+        logger.info("CUDA_VISIBLE_DEVICES=%s", args.gpus)
+
     for path in written:
-        cmd = [
-            "python",
-            str(ROOT / "scripts" / "train.py"),
-            "--config",
-            str(path),
-        ]
+        train_py = str(ROOT / "scripts" / "train.py")
+        if args.launcher == "python":
+            cmd = ["python", train_py, "--config", str(path)]
+        elif args.launcher == "accelerate":
+            cmd = [
+                "accelerate",
+                "launch",
+                "--num_processes",
+                str(max(1, args.num_proc)),
+                train_py,
+                "--config",
+                str(path),
+            ]
+        else:  # torchrun
+            cmd = [
+                "torchrun",
+                "--nproc_per_node",
+                str(max(1, args.num_proc)),
+                train_py,
+                "--config",
+                str(path),
+            ]
+
         logger.info("실행 시작: %s", " ".join(cmd))
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, env=env)
 
 
 if __name__ == "__main__":
