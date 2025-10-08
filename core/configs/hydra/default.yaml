@@ -1,6 +1,5 @@
 run:
   dir: ${run.output_dir}
-  output_subdir: ""
 
 sweep:
   dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/sweeps/${experiment_name}
