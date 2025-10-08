@@ -64,6 +64,7 @@ class Trainer:
         out_dir: str,
         cfg: TrainCfg,
         experiment: Optional[ExperimentManager] = None,
+        accelerator: Optional[Accelerator] = None,
     ) -> None:
         self.model = model
         self.train_loader = train_loader
@@ -77,7 +78,7 @@ class Trainer:
         self.system_logger = get_logger(__name__)
         self.train_logger = get_train_logger()
 
-        self.accel = Accelerator(
+        self.accel = accelerator or Accelerator(
             mixed_precision=cfg.mixed_precision or "no",
             gradient_accumulation_steps=cfg.grad_accum_steps,
         )
@@ -172,6 +173,10 @@ class Trainer:
     # Epoch helpers
     # ------------------------------------------------------------------
     def _train_one_epoch(self, epoch: int, steps_limit: int) -> Dict[str, float]:
+        sampler = getattr(self.train_loader, "sampler", None)
+        if hasattr(sampler, "set_epoch"):
+            sampler.set_epoch(epoch)
+
         self.model.train()
         total_loss = 0.0
         total_acc = 0.0

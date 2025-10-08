@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import hydra
+from accelerate import Accelerator
 from omegaconf import DictConfig, OmegaConf
 
 from core.datasets import build_dataloaders
@@ -65,21 +66,25 @@ def _build_train_cfg(cfg: DictConfig) -> TrainCfg:
 def run_training(cfg: DictConfig) -> Path:
     """Hydra DictConfig를 받아 단일 학습을 수행한다."""
 
-    set_seed(cfg.run.seed)
+    accelerator = Accelerator()
+    set_seed((cfg.run.seed or 0) + accelerator.process_index)
+    if cfg.run.seed is not None:
+        try:
+            accelerator.seed(cfg.run.seed)
+        except Exception:
+            pass
 
     experiment_dir = Path(cfg.run.output_dir).expanduser().resolve()
-    if experiment_dir.exists() and any(experiment_dir.iterdir()):
-        from datetime import datetime
-
-        suffix = datetime.utcnow().strftime("%H%M%S_%f")
-        experiment_dir = experiment_dir.parent / f"{experiment_dir.name}_{suffix}"
-    experiment_dir.mkdir(parents=True, exist_ok=True)
+    if accelerator.is_main_process:
+        experiment_dir.mkdir(parents=True, exist_ok=True)
+    accelerator.wait_for_everyone()
 
     logging_cfg = _to_dict(cfg.logging)
     level_name = str(logging_cfg.get("level", "INFO"))
     log_level = getattr(logging, level_name.upper(), logging.INFO)
-    logging.getLogger().setLevel(log_level)
-    logger.setLevel(log_level)
+    if accelerator.is_main_process:
+        logging.getLogger().setLevel(log_level)
+        logger.setLevel(log_level)
 
     handlers_cfg = _to_dict(logging_cfg.get("handlers", {}))
 
@@ -113,25 +118,38 @@ def run_training(cfg: DictConfig) -> Path:
         if not jsonl_path.is_absolute():
             jsonl_path = experiment_dir / jsonl_path
 
-    setup_experiment_loggers(
-        experiment_dir,
-        level=log_level,
-        console=console_enabled,
-        train_log=train_path,
-        system_log=system_path,
-        jsonl_path=jsonl_path,
-    )
+    if accelerator.is_main_process:
+        setup_experiment_loggers(
+            experiment_dir,
+            level=log_level,
+            console=console_enabled,
+            train_log=train_path,
+            system_log=system_path,
+            jsonl_path=jsonl_path,
+        )
+    accelerator.wait_for_everyone()
 
     dataset_cfg = cfg.dataset
-    train_loader, val_loader, class_names = build_dataloaders(dataset_cfg)
-    logger.info("데이터셋 클래스: %s", class_names)
+    train_loader, val_loader, class_names = build_dataloaders(
+        dataset_cfg,
+        world_size=accelerator.num_processes,
+        rank=accelerator.process_index,
+        seed=cfg.run.seed,
+    )
+    if accelerator.is_main_process:
+        logger.info("데이터셋 클래스: %s", class_names)
 
     params_dict = _to_dict(cfg.model.get("params", {})) or {}
     model = get_model(cfg.model.name, **params_dict)
 
     train_cfg = _build_train_cfg(cfg)
     monitor = MonitorConfig(key=train_cfg.ckpt_monitor, mode=train_cfg.ckpt_mode)
-    manager = ExperimentManager(experiment_dir, monitor=monitor, config=cfg)
+    manager = ExperimentManager(
+        experiment_dir,
+        monitor=monitor,
+        config=cfg if accelerator.is_main_process else None,
+        is_main_process=accelerator.is_main_process,
+    )
 
     trainer = Trainer(
         model=model,
@@ -140,6 +158,7 @@ def run_training(cfg: DictConfig) -> Path:
         out_dir=str(experiment_dir),
         cfg=train_cfg,
         experiment=manager,
+        accelerator=accelerator,
     )
     final_val_metrics = trainer.fit()
 
@@ -156,7 +175,9 @@ def run_training(cfg: DictConfig) -> Path:
     }
     manager.append_summary(summary_row)
 
-    logger.info("학습 종료 - 산출물 경로: %s", experiment_dir)
+    if accelerator.is_main_process:
+        logger.info("학습 종료 - 산출물 경로: %s", experiment_dir)
+    accelerator.wait_for_everyone()
     return experiment_dir
 
 

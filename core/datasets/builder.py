@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image, UnidentifiedImageError
 import torch
 from torch.utils.data import ConcatDataset, DataLoader, Subset, WeightedRandomSampler
+from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets
 
 from core.utils.logger import get_logger
@@ -133,7 +135,14 @@ def _build_sample_weights(
     return torch.DoubleTensor(weights)
 
 
-def build_dataloaders(cfg: DatasetConfig | dict, *, shuffle_train: bool = True) -> Tuple[DataLoader, Optional[DataLoader], list[str]]:
+def build_dataloaders(
+    cfg: DatasetConfig | dict,
+    *,
+    shuffle_train: bool = True,
+    world_size: int = 1,
+    rank: int = 0,
+    seed: Optional[int] = None,
+) -> Tuple[DataLoader, Optional[DataLoader], list[str]]:
     """DatasetConfig를 받아 학습/검증 DataLoader를 생성한다."""
 
     dataset_cfg = load_dataset_config(cfg)
@@ -212,8 +221,24 @@ def build_dataloaders(cfg: DatasetConfig | dict, *, shuffle_train: bool = True) 
         train_dataset = ConcatDataset(train_datasets)
 
     sample_weights = _build_sample_weights(per_source_targets, normalized_weights)
-    use_sampler = sample_weights.numel() > 0
-    if use_sampler:
+    distributed = world_size > 1
+    sampler = None
+    use_sampler = sample_weights.numel() > 0 and not distributed
+    if distributed:
+        sampler = DistributedSampler(
+            train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=shuffle_train,
+            seed=seed if seed is not None else 0,
+        )
+        train_loader = DataLoader(
+            train_dataset,
+            sampler=sampler,
+            drop_last=dataset_cfg.loader.drop_last,
+            **loader_kwargs,
+        )
+    elif use_sampler:
         sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
         train_loader = DataLoader(
             train_dataset,
@@ -255,6 +280,20 @@ def build_dataloaders(cfg: DatasetConfig | dict, *, shuffle_train: bool = True) 
                 val_dataset = val_datasets[0]
             else:
                 val_dataset = ConcatDataset(val_datasets)
+        if distributed:
+            val_sampler = DistributedSampler(
+                val_dataset,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=False,
+            )
+            val_loader = DataLoader(
+                val_dataset,
+                sampler=val_sampler,
+                drop_last=False,
+                **loader_kwargs,
+            )
+        else:
             val_loader = DataLoader(
                 val_dataset,
                 shuffle=False,
@@ -274,14 +313,16 @@ def build_dataloaders(cfg: DatasetConfig | dict, *, shuffle_train: bool = True) 
         preset_label = sns_config.get("name") or sns_config.get("type")
 
     source_label = "+".join(included_sources)
-    logger.info(
-        "데이터로더 준비 완료 - train=%d, val=%d, batch=%d, workers=%d, augment=%s, sources=%s, sampler=%s",
-        train_size,
-        val_size,
-        dataset_cfg.loader.batch_size,
-        dataset_cfg.loader.num_workers,
-        str(preset_label),
-        source_label,
-        "Weighted" if use_sampler else ("shuffle" if shuffle_train else "sequential"),
-    )
+    if int(os.environ.get("RANK", "0")) == 0:
+        sampler_label = "distributed" if distributed else ("Weighted" if use_sampler else ("shuffle" if shuffle_train else "sequential"))
+        logger.info(
+            "데이터로더 준비 완료 - train=%d, val=%d, batch=%d, workers=%d, augment=%s, sources=%s, sampler=%s",
+            train_size,
+            val_size,
+            dataset_cfg.loader.batch_size,
+            dataset_cfg.loader.num_workers,
+            str(preset_label),
+            source_label,
+            sampler_label,
+        )
     return train_loader, val_loader, list(class_names)

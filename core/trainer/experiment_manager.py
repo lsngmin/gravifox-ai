@@ -45,11 +45,15 @@ class ExperimentManager:
         root: Path | str,
         monitor: MonitorConfig | Dict[str, Any] | None = None,
         config: Any | None = None,
+        is_main_process: bool = True,
     ):
+        self.is_main_process = is_main_process
         self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True)
+        if self.is_main_process:
+            self.root.mkdir(parents=True, exist_ok=True)
         self.ckpt_dir = self.root / "checkpoints"
-        self.ckpt_dir.mkdir(exist_ok=True)
+        if self.is_main_process:
+            self.ckpt_dir.mkdir(exist_ok=True)
         if monitor is None:
             monitor = MonitorConfig()
         elif isinstance(monitor, dict):
@@ -60,9 +64,10 @@ class ExperimentManager:
         self.summary_file = self.root / "best_metrics.json"
         self.meta_file = self.root / "meta.yaml"
         self.config_file = self.root / "config.yaml"
-        if config is not None:
+        if self.is_main_process and config is not None:
             self.capture_config(config)
-        logger.info("실험 매니저 초기화 - root=%s monitor=%s/%s", self.root, monitor.key, monitor.mode)
+        if self.is_main_process:
+            logger.info("실험 매니저 초기화 - root=%s monitor=%s/%s", self.root, monitor.key, monitor.mode)
 
     # ------------------------------------------------------------------
     # Config & metadata helpers
@@ -70,6 +75,8 @@ class ExperimentManager:
     def capture_config(self, cfg: Any) -> None:
         """실험에 사용된 설정을 메타 스냅샷으로 저장한다."""
 
+        if not self.is_main_process:
+            return
         payload = _config_to_dict(cfg)
         with open(self.meta_file, "w", encoding="utf-8") as fp:
             yaml.safe_dump(payload, fp, allow_unicode=True, sort_keys=False)
@@ -86,6 +93,8 @@ class ExperimentManager:
     def log_metrics(self, epoch: int, split: str, metrics: Dict[str, Any]) -> None:
         """메트릭을 JSONL에 축적한다."""
 
+        if not self.is_main_process:
+            return
         record = {
             "epoch": int(epoch),
             "split": split,
@@ -98,6 +107,8 @@ class ExperimentManager:
     def update_best(self, metrics: Dict[str, Any]) -> bool:
         """모니터 지표를 갱신하고 베스트 여부를 반환."""
 
+        if not self.is_main_process:
+            return False
         key = self.monitor.key
         if key not in metrics:
             return False
@@ -115,6 +126,8 @@ class ExperimentManager:
     def save_checkpoint(self, state: Dict[str, Any], *, is_best: bool) -> None:
         """latest/best 체크포인트를 저장한다."""
 
+        if not self.is_main_process:
+            return
         save_checkpoint(state, self.ckpt_dir, filename="last.pt")
         if is_best:
             save_checkpoint(state, self.ckpt_dir, filename="best.pt")
@@ -125,6 +138,8 @@ class ExperimentManager:
     def append_summary(self, row: Dict[str, Any]) -> None:
         """모델 전용 summary.csv에 한 줄을 추가한다."""
 
+        if not self.is_main_process:
+            return
         summary_path = self.root.parent / "summary.csv"
         exists = summary_path.exists()
         fieldnames = ["timestamp", "model", "dataset", "optimizer", "val_acc", "val_loss"]
