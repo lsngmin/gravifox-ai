@@ -1,0 +1,26 @@
+# Baseline experiment: default training recipe
+experiment_name: e0_baseline
+
+run:
+  seed: 1337
+  output_dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/${experiment_name}/${now:%Y%m%d_%H%M%S}
+
+optimizer:
+  name: adamw
+  lr: 2.0e-5
+  weight_decay: 0.05
+
+scheduler:
+  name: cosine
+  warmup_epochs: 2  # handled via warmup% later if needed
+
+trainer:
+  partial_epochs: 35
+  full_epochs: 5
+  partial_steps: 10000
+  full_steps: -1
+  grad_accum_steps: 2
+  mixed_precision: fp16
+  label_smoothing: 0.1
+
+notes: "Baseline reference configuration"

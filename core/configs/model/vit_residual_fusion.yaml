@@ -1,0 +1,7 @@
+name: vit_residual_fusion
+params:
+  num_classes: 2
+  vit_name: vit_base_patch16_224
+  pretrained: true
+  residual_embed_dim: 128
+  model_version: vit_residual_v1

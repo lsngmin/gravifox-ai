@@ -2,22 +2,26 @@
 
 이 모듈은 core 하위 코드에서 일관된 로깅 포맷과 레벨을 사용하도록 돕는다.
 컬러 출력(coloredlogs)을 한 번만 초기화하고, 각 모듈에서는 `get_logger`로
-로거를 가져가서 사용하면 된다. 또한 `log_time` 데코레이터를 제공하여
-핵심 함수의 실행 시간을 자동으로 INFO 로그로 남길 수 있게 했다.
+시스템 로그를, `get_train_logger`로 학습 전용 로그를 받아 사용한다.
+또한 `setup_experiment_loggers`를 통해 실험별 train/system 로그 파일을 분리해
+기록한다.
 """
 
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import time
-from typing import Any, Callable, Optional, TypeVar, cast
 from pathlib import Path
+from typing import Any, Callable, Optional, TypeVar, cast
 
 import coloredlogs
 
 
 _ROOT_INITIALIZED: bool = False
+_TRAIN_LOGGER_NAME = "gravifox.train"
+_SYSTEM_LOGGER_NAME = "gravifox.system"
 _DEFAULT_FORMAT = (
     "%(asctime)s | %(levelname)-8s | %(process)d-%(threadName)s | "
     "%(name)s | %(filename)s:%(lineno)d | %(funcName)s | %(message)s"
@@ -49,39 +53,113 @@ def _initialize_root_logger(level: int = logging.INFO) -> None:
     _ROOT_INITIALIZED = True
 
 
+def _system_base_logger() -> logging.Logger:
+    """시스템 로그의 루트 로거를 반환한다."""
+
+    _initialize_root_logger(logging.INFO)
+    return logging.getLogger(_SYSTEM_LOGGER_NAME)
+
+
 def get_logger(name: str, level: Optional[int] = None) -> logging.Logger:
-    """모듈별 로거를 반환한다.
+    """시스템 로그 계층에서 파생된 모듈별 로거를 반환한다."""
 
-    Args:
-        name: 로거 이름(일반적으로 __name__).
-        level: 개별 로거 레벨을 지정하고 싶을 때 사용.
-
-    Returns:
-        logging.Logger 인스턴스.
-    """
-
-    _initialize_root_logger(level or logging.INFO)
-    logger = logging.getLogger(name)
+    base = _system_base_logger()
+    logger = base.getChild(name)
     if level is not None:
         logger.setLevel(level)
     return logger
 
-def add_file_handler(log_dir: Path, level: int = logging.INFO) -> None:
-    """파일 핸들러를 추가해 로그를 저장한다.
 
-        Args:
-            log_dir: 로그 파일을 보관할 디렉터리.
-            level: 로깅 레벨.
+def get_system_logger() -> logging.Logger:
+    """시스템 로그 베이스 로거를 반환한다."""
 
-        Returns:
-            None
-        """
-    log_dir.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(log_dir / "train.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter(_DEFAULT_FORMAT))
-    root = logging.getLogger()
-    root.addHandler(handler)
-    root.setLevel(level)
+    return _system_base_logger()
+
+
+def get_train_logger(level: Optional[int] = None) -> logging.Logger:
+    """학습 전용 로그 로거를 반환한다."""
+
+    _initialize_root_logger(level or logging.INFO)
+    logger = logging.getLogger(_TRAIN_LOGGER_NAME)
+    if level is not None:
+        logger.setLevel(level)
+    return logger
+
+
+class _JsonFormatter(logging.Formatter):
+    """JSONL 형식 출력을 위한 포매터."""
+
+    def format(self, record: logging.LogRecord) -> str:  # type: ignore[override]
+        payload = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created)) + f".{int(record.msecs):03d}Z",
+            "level": record.levelname,
+            "name": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def _clear_file_handlers(logger: logging.Logger) -> None:
+    for handler in list(logger.handlers):
+        if isinstance(handler, logging.FileHandler):
+            logger.removeHandler(handler)
+            handler.close()
+
+
+def setup_experiment_loggers(
+    exp_dir: Path,
+    *,
+    level: int = logging.INFO,
+    console: bool = True,
+    train_log: str | Path = "logs/train.log",
+    system_log: str | Path = "logs/system.log",
+    jsonl_path: Optional[Path] = None,
+) -> None:
+    """실험 디렉터리에 대해 학습/시스템 로그 파일을 설정한다."""
+
+    _initialize_root_logger(level)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+
+    for handler in root_logger.handlers:
+        handler.setLevel(level if console else max(level + 10, logging.CRITICAL))
+
+    def _resolve(pathlike: str | Path) -> Path:
+        path = Path(pathlike)
+        if not path.is_absolute():
+            path = exp_dir / path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    train_path = _resolve(train_log)
+    system_path = _resolve(system_log)
+
+    system_logger = get_system_logger()
+    system_logger.setLevel(level)
+    system_logger.propagate = True
+    _clear_file_handlers(system_logger)
+    system_handler = logging.FileHandler(system_path, encoding="utf-8")
+    system_handler.setFormatter(logging.Formatter(_DEFAULT_FORMAT))
+    system_handler.setLevel(level)
+    system_logger.addHandler(system_handler)
+
+    train_logger = get_train_logger(level)
+    train_logger.setLevel(level)
+    train_logger.propagate = False
+    _clear_file_handlers(train_logger)
+    train_handler = logging.FileHandler(train_path, encoding="utf-8")
+    train_handler.setFormatter(logging.Formatter(_DEFAULT_FORMAT))
+    train_handler.setLevel(level)
+    train_logger.addHandler(train_handler)
+
+    if jsonl_path is not None:
+        jsonl_full = _resolve(jsonl_path)
+        json_handler = logging.FileHandler(jsonl_full, encoding="utf-8")
+        json_handler.setFormatter(_JsonFormatter())
+        json_handler.setLevel(level)
+        train_logger.addHandler(json_handler)
 
 F = TypeVar("F", bound=Callable[..., Any])
 

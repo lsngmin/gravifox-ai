@@ -1,0 +1,5 @@
+experiment_name: ${model.name}
+run:
+  seed: 1337
+  output_dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/${experiment_name}/${now:%Y%m%d_%H%M%S}
+resume: null

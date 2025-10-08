@@ -1,0 +1,2 @@
+2025-01-01 00:00:00 | INFO     | mainThread | gravifox.train | epoch | fit | 에폭 001 완료 - train_loss=0.2450 train_acc=0.9100 val_loss=0.3100 val_acc=0.8820
+2025-01-01 00:00:02 | INFO     | mainThread | gravifox.train | epoch | fit | 에폭 002 완료 - train_loss=0.1800 train_acc=0.9450 val_loss=0.2500 val_acc=0.9100

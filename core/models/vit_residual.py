@@ -77,3 +77,9 @@ def build_vit_residual(**kwargs) -> ViTResidualFusionModel:
     cfg = ViTResidualConfig(**kwargs)
     return ViTResidualFusionModel(cfg)
 
+
+@register("vit_residual_fusion")
+def build_vit_residual_fusion(**kwargs) -> ViTResidualFusionModel:
+    """별칭 빌더 (Hydra config 호환)."""
+
+    return build_vit_residual(**kwargs)

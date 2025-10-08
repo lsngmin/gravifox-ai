@@ -1,0 +1,9 @@
+level: INFO
+handlers:
+  console: true
+  file:
+    enabled: true
+    dir: logs
+  jsonl:
+    enabled: true
+    path: logs/events.jsonl

@@ -1,0 +1,24 @@
+# Experiment E2-A: Light SNS augmentation preset
+defaults:
+  - override /dataset: sns_light_dataset
+
+experiment_name: e2_aug_light
+
+run:
+  seed: 1337
+  output_dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/${experiment_name}/${now:%Y%m%d_%H%M%S}
+
+optimizer:
+  name: adamw
+  lr: 2.0e-5
+  weight_decay: 0.05
+
+trainer:
+  partial_epochs: 35
+  full_epochs: 5
+  partial_steps: 10000
+  full_steps: -1
+  grad_accum_steps: 2
+  label_smoothing: 0.1
+
+notes: "SNS light augmentation sweep"

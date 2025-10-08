@@ -1,0 +1,34 @@
+name: base
+
+data_root: /home/smin/datasets/genimage
+sources:
+  - imagenet_ai_0419_biggan
+  - imagenet_ai_0419_sdv4
+  - imagenet_ai_0419_vqdm
+  - imagenet_ai_0424_sdv5
+  - imagenet_ai_0424_wukong
+  - imagenet_ai_0508_adm
+  - imagenet_glide
+  - imagenet_midjourney
+source_weights: {}
+
+train:
+  root: ${dataset.data_root}/${dataset.source}/train
+  transforms: []
+val:
+  root: ${dataset.data_root}/${dataset.source}/val
+  transforms: []
+
+image_size: 224
+source: imagenet_ai_0508_adm
+
+augment:
+  sns: ${augment}
+
+normalization:
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+loader:
+  pin_memory: true
+  persistent_workers: true

@@ -1,0 +1,15 @@
+type: sns
+name: sns_light
+chain_depth: [1, 2]
+params:
+  jpeg_q: [70, 100]
+  webp_q: [70, 100]
+  resize_long: [640, 1536]
+  aspect_ratio: [0.75, 1.4]
+  noise_sigma: [0.0, 1.5]
+  gamma: [0.9, 1.1]
+  contrast: [0.9, 1.1]
+  saturation: [0.9, 1.1]
+  brightness: [0.9, 1.1]
+  repeats: [1, 2]
+  watermark_alpha: [0.05, 0.15]

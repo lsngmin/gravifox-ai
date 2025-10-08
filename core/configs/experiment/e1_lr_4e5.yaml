@@ -1,0 +1,21 @@
+# Experiment E1-C: Learning rate sweep (4e-5)
+experiment_name: e1_lr_4e5
+
+run:
+  seed: 1337
+  output_dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/${experiment_name}/${now:%Y%m%d_%H%M%S}
+
+optimizer:
+  name: adamw
+  lr: 4.0e-5
+  weight_decay: 0.05
+
+trainer:
+  partial_epochs: 35
+  full_epochs: 5
+  partial_steps: 10000
+  full_steps: -1
+  grad_accum_steps: 2
+  label_smoothing: 0.1
+
+notes: "AdamW lr sweep - high"

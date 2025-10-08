@@ -19,8 +19,7 @@ logger = get_logger(__name__)
 def load_model_from_checkpoint(model_name: str, ckpt_path: str, device: str = "cuda") -> Tuple[torch.nn.Module, str]:
     """체크포인트에서 모델을 로드한다."""
 
-    builder = get_model(model_name)
-    model = builder()
+    model = get_model(model_name)
     checkpoint = torch.load(ckpt_path, map_location="cpu")
     state_dict = checkpoint.get("model", checkpoint)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)

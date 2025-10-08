@@ -1,0 +1,9 @@
+defaults:
+  - base
+  - override /augment: sns_light
+  - _self_
+
+name: sns_light_dataset
+loader:
+  batch_size: 128
+  num_workers: 8

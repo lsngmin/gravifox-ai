@@ -1,0 +1,10 @@
+model:
+  name: sample_model
+  params:
+    num_classes: 2
+dataset:
+  name: standard
+optimizer:
+  name: adamw
+trainer:
+  epochs: 2

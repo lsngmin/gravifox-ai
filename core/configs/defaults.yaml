@@ -1,0 +1,18 @@
+defaults:
+  - experiment: default
+  - logging: default
+  - augment: sns_standard
+  - model: vit_residual_fusion
+  - dataset: sns_standard_dataset
+  - trainer: default
+  - optimizer: adamw
+  - scheduler: cosine
+
+hydra:
+  run:
+    dir: ${run.output_dir}
+  sweep:
+    dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/sweeps
+    subdir: ${model.name}/${now:%Y%m%d_%H%M%S}_${hydra.job.num}
+  job:
+    chdir: false

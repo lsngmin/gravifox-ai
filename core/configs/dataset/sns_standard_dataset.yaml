@@ -1,0 +1,22 @@
+defaults:
+  - base
+  - override /augment: sns_standard
+  - _self_
+
+name: sns_standard_dataset
+loader:
+  batch_size: 128
+  num_workers: 12
+  drop_last: true
+train:
+  transforms:
+    - type: RandomResizedCrop
+      size: ${dataset.image_size}
+      scale: [0.8, 1.0]
+    - type: RandomHorizontalFlip
+val:
+  transforms:
+    - type: Resize
+      size: 256
+    - type: CenterCrop
+      size: ${dataset.image_size}
