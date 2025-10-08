@@ -8,3 +8,9 @@ defaults:
   - optimizer: adamw
   - scheduler: cosine
   - _self_
+
+run:
+  seed: 1337
+  output_dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/${model.name}/${now:%Y%m%d_%H%M%S}
+
+resume: null
