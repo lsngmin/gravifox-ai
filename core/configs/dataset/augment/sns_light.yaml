@@ -1,0 +1,3 @@
+defaults:
+  - /augment: sns_light
+  - _self_

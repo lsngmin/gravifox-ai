@@ -1,0 +1,3 @@
+defaults:
+  - /augment: sns_standard
+  - _self_
