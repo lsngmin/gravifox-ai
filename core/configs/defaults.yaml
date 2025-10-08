@@ -1,4 +1,5 @@
 defaults:
+  - hydra: default
   - experiment: default
   - logging: default
   - augment: sns_standard
@@ -7,6 +8,7 @@ defaults:
   - trainer: default
   - optimizer: adamw
   - scheduler: cosine
+  - _self_
 
 hydra:
   run:
