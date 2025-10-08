@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -10,6 +11,10 @@ import torch
 import torch.distributed as dist
 from accelerate import Accelerator
 from omegaconf import DictConfig, OmegaConf
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.datasets import build_dataloaders
 from core.models.registry import get_model
