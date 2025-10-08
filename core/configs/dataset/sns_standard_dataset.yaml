@@ -5,7 +5,7 @@ defaults:
 
 name: sns_standard_dataset
 loader:
-  batch_size: 128
+  batch_size: 384
   num_workers: 12
   drop_last: true
 train:

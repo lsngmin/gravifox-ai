@@ -4,7 +4,7 @@ full_epochs: 5
 partial_steps: 10000
 full_steps: -1
 mixed_precision: fp16
-grad_accum_steps: 2
+grad_accum_steps: 1
 log_interval: 50
 criterion: ce
 label_smoothing: 0.0
