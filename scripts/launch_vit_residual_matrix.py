@@ -207,6 +207,10 @@ def main() -> None:
         env["CUDA_VISIBLE_DEVICES"] = args.gpus
         logger.info("CUDA_VISIBLE_DEVICES=%s", args.gpus)
 
+    if args.launcher == "accelerate":
+        env.setdefault("MASTER_ADDR", str(args.main_process_ip))
+        env.setdefault("MASTER_PORT", str(args.main_process_port))
+
     for path in written:
         train_py = str(ROOT / "scripts" / "train.py")
         if args.launcher == "python":
@@ -219,8 +223,12 @@ def main() -> None:
                 str(args.main_process_ip),
                 "--main_process_port",
                 str(args.main_process_port),
+                "--num_machines",
+                "1",
                 "--num_processes",
                 str(max(1, args.num_proc)),
+                "--dynamo_backend",
+                "no",
                 train_py,
                 "--config",
                 str(path),

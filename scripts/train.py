@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 
 import hydra
 import torch
+import torch.distributed as dist
 from accelerate import Accelerator
 from omegaconf import DictConfig, OmegaConf
 
@@ -65,6 +66,34 @@ def _build_train_cfg(cfg: DictConfig) -> TrainCfg:
     )
 
 
+def _sync_processes(accelerator: Accelerator) -> None:
+    """NCCL 경고 없이 프로세스 간 동기화."""
+
+    if accelerator.num_processes <= 1:
+        return
+
+    try:
+        if dist.is_available() and dist.is_initialized():
+            current_device = None
+            device_obj = getattr(accelerator, "device", None)
+            if isinstance(device_obj, torch.device) and device_obj.type == "cuda":
+                current_device = device_obj.index
+            if current_device is None and torch.cuda.is_available():
+                current_device = torch.cuda.current_device()
+            if current_device is not None:
+                try:
+                    dist.barrier(device_ids=[current_device])
+                    return
+                except TypeError:
+                    pass
+            dist.barrier()
+            return
+    except Exception:
+        pass
+
+    accelerator.wait_for_everyone()
+
+
 def run_training(cfg: DictConfig) -> Path:
     """Hydra DictConfig를 받아 단일 학습을 수행한다."""
 
@@ -99,7 +128,7 @@ def run_training(cfg: DictConfig) -> Path:
     experiment_dir = Path(cfg.run.output_dir).expanduser().resolve()
     if accelerator.is_main_process:
         experiment_dir.mkdir(parents=True, exist_ok=True)
-    accelerator.wait_for_everyone()
+    _sync_processes(accelerator)
 
     logging_cfg = _to_dict(cfg.logging)
     level_name = str(logging_cfg.get("level", "INFO"))
@@ -152,7 +181,7 @@ def run_training(cfg: DictConfig) -> Path:
     )
     if accelerator.is_main_process:
         setup_experiment_loggers(**setup_kwargs)
-    accelerator.wait_for_everyone()
+    _sync_processes(accelerator)
 
     dataset_cfg = cfg.dataset
     train_loader, val_loader, class_names = build_dataloaders(
@@ -202,7 +231,7 @@ def run_training(cfg: DictConfig) -> Path:
 
     if accelerator.is_main_process:
         logger.info("학습 종료 - 산출물 경로: %s", experiment_dir)
-    accelerator.wait_for_everyone()
+    _sync_processes(accelerator)
     return experiment_dir
 
 
