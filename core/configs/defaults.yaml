@@ -1,6 +1,5 @@
 defaults:
   - experiment: default
-  - hydra: default
   - logging: default
   - augment: sns_standard
   - model: vit_residual_fusion
