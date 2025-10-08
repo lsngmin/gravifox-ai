@@ -3,3 +3,10 @@ run:
   seed: 1337
   output_dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/${experiment_name}/${now:%Y%m%d_%H%M%S}
 resume: null
+
+hydra:
+  run:
+    dir: ${run.output_dir}
+  sweep:
+    dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/sweeps/${experiment_name}
+    subdir: ${now:%Y%m%d_%H%M%S}_${hydra.job.num}
