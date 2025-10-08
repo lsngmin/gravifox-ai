@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import hydra
+import torch
 from accelerate import Accelerator
 from omegaconf import DictConfig, OmegaConf
 
@@ -67,6 +68,16 @@ def run_training(cfg: DictConfig) -> Path:
     """Hydra DictConfig를 받아 단일 학습을 수행한다."""
 
     accelerator = Accelerator()
+    if torch.cuda.is_available():
+        try:
+            device = getattr(accelerator, "device", None)
+            if isinstance(device, torch.device) and device.type == "cuda":
+                torch.cuda.set_device(device)
+            else:
+                torch.cuda.set_device(accelerator.local_process_index)
+        except Exception:
+            # 디바이스 고정 실패는 학습을 막지는 않음
+            pass
     set_seed((cfg.run.seed or 0) + accelerator.process_index)
     if cfg.run.seed is not None:
         try:
@@ -118,22 +129,25 @@ def run_training(cfg: DictConfig) -> Path:
         if not jsonl_path.is_absolute():
             jsonl_path = experiment_dir / jsonl_path
 
+    world_size = accelerator.num_processes
+    rank = accelerator.process_index
+    setup_kwargs = dict(
+        exp_dir=experiment_dir,
+        level=log_level,
+        console=console_enabled,
+        train_log=train_path,
+        system_log=system_path,
+        jsonl_path=jsonl_path,
+    )
     if accelerator.is_main_process:
-        setup_experiment_loggers(
-            experiment_dir,
-            level=log_level,
-            console=console_enabled,
-            train_log=train_path,
-            system_log=system_path,
-            jsonl_path=jsonl_path,
-        )
+        setup_experiment_loggers(**setup_kwargs)
     accelerator.wait_for_everyone()
 
     dataset_cfg = cfg.dataset
     train_loader, val_loader, class_names = build_dataloaders(
         dataset_cfg,
-        world_size=accelerator.num_processes,
-        rank=accelerator.process_index,
+        world_size=world_size,
+        rank=rank,
         seed=cfg.run.seed,
     )
     if accelerator.is_main_process:

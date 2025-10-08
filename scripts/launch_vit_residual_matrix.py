@@ -163,6 +163,22 @@ def main() -> None:
         default=None,
         help="사용할 GPU 인덱스 목록 (예: '0,1'). 설정 시 CUDA_VISIBLE_DEVICES 적용",
     )
+    parser.add_argument(
+        "--main-process-ip",
+        default="127.0.0.1",
+        help="accelerate에서 메인 프로세스 IP를 강제 설정 (기본값: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--main-process-port",
+        type=int,
+        default=29511,
+        help="accelerate 메인 프로세스 포트 (기본값: 29511)",
+    )
+    parser.add_argument(
+        "--disable-comm-tweaks",
+        action="store_true",
+        help="GLOO_SOCKET_IFNAME/NCCL_IB_DISABLE 기본 설정을 끕니다.",
+    )
     args = parser.parse_args()
 
     base_path = Path(args.base_config)
@@ -199,12 +215,24 @@ def main() -> None:
             cmd = [
                 "accelerate",
                 "launch",
+                "--main_process_ip",
+                str(args.main_process_ip),
+                "--main_process_port",
+                str(args.main_process_port),
                 "--num_processes",
                 str(max(1, args.num_proc)),
                 train_py,
                 "--config",
                 str(path),
             ]
+            if not args.disable_comm_tweaks:
+                env.setdefault("GLOO_SOCKET_IFNAME", "lo")
+                env.setdefault("NCCL_IB_DISABLE", "1")
+                logger.info(
+                    "Accelerate 통신 환경 변수 적용: GLOO_SOCKET_IFNAME=%s, NCCL_IB_DISABLE=%s",
+                    env["GLOO_SOCKET_IFNAME"],
+                    env["NCCL_IB_DISABLE"],
+                )
         else:  # torchrun
             cmd = [
                 "torchrun",

@@ -51,9 +51,10 @@ class ExperimentManager:
         self.root = Path(root)
         if self.is_main_process:
             self.root.mkdir(parents=True, exist_ok=True)
-        self.ckpt_dir = self.root / "checkpoints"
-        if self.is_main_process:
+            self.ckpt_dir = self.root / "checkpoints"
             self.ckpt_dir.mkdir(exist_ok=True)
+        else:
+            self.ckpt_dir = self.root / "checkpoints"
         if monitor is None:
             monitor = MonitorConfig()
         elif isinstance(monitor, dict):
