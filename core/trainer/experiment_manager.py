@@ -161,5 +161,8 @@ def _to_serializable(value: Any) -> Any:
 
 def _config_to_dict(cfg: Any) -> Any:
     if OmegaConf is not None and isinstance(cfg, DictConfig):  # type: ignore[arg-type]
-        return OmegaConf.to_container(cfg, resolve=True)
+        try:
+            return OmegaConf.to_container(cfg, resolve=True)
+        except Exception:
+            return OmegaConf.to_container(cfg, resolve=False)
     return cfg

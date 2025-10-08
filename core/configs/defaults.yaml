@@ -14,3 +14,5 @@ run:
   output_dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/${model.name}/${now:%Y%m%d_%H%M%S}
 
 resume: null
+
+experiment_name: ${model.name}
