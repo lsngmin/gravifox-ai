@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import math
+import os
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
@@ -56,6 +57,25 @@ class TrainCfg:
 class Trainer:
     """Accelerate 기반 학습 관리자."""
 
+    @staticmethod
+    def _loader_summary(loader: Optional[DataLoader]) -> str:
+        if loader is None:
+            return "<none>"
+        prefetch = getattr(loader, "prefetch_factor", None)
+        try:
+            batch_size = loader.batch_size
+        except AttributeError:
+            batch_size = getattr(loader, "batch_sampler", None)
+        return (
+            "batch_size={} num_workers={} prefetch_factor={} pin_memory={} persistent_workers={}".format(
+                getattr(loader, "batch_size", batch_size),
+                getattr(loader, "num_workers", "n/a"),
+                prefetch,
+                getattr(loader, "pin_memory", "n/a"),
+                getattr(loader, "persistent_workers", "n/a"),
+            )
+        )
+
     def __init__(
         self,
         model: nn.Module,
@@ -77,6 +97,17 @@ class Trainer:
 
         self.system_logger = get_logger(__name__)
         self.train_logger = get_train_logger()
+
+        main_process = str(os.environ.get("LOCAL_RANK", "0")) == "0"
+        if main_process:
+            self.system_logger.info(
+                "DataLoader 설정(train/before prepare) - %s",
+                self._loader_summary(train_loader),
+            )
+            self.system_logger.info(
+                "DataLoader 설정(val/before prepare) - %s",
+                self._loader_summary(val_loader),
+            )
 
         self.accel = accelerator or Accelerator(
             mixed_precision=cfg.mixed_precision or "no",
@@ -116,6 +147,16 @@ class Trainer:
         else:
             (self.model, self.optimizer, self.train_loader, self.val_loader) = self.accel.prepare(
                 self.model, self.optimizer, self.train_loader, self.val_loader
+            )
+
+        if self.accel.is_main_process:
+            self.system_logger.info(
+                "DataLoader 설정(train/after prepare) - %s",
+                self._loader_summary(self.train_loader),
+            )
+            self.system_logger.info(
+                "DataLoader 설정(val/after prepare) - %s",
+                self._loader_summary(self.val_loader),
             )
 
     # ------------------------------------------------------------------

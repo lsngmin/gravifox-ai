@@ -8,7 +8,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image, UnidentifiedImageError
 import torch
-from torch.utils.data import ConcatDataset, DataLoader, Subset, WeightedRandomSampler
+from torch.utils.data import ConcatDataset, DataLoader, Subset, WeightedRandomSampler, get_worker_info
 from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets
 
@@ -19,6 +19,25 @@ from .sns_augment import build_sns_augment
 from .transforms import build_train_transforms, build_val_transforms
 
 logger = get_logger(__name__)
+_DEBUG_WORKERS = os.environ.get("TVB_DATALOADER_DEBUG_WORKERS")
+
+
+def _get_worker_init_fn(tag: str):
+    if not _DEBUG_WORKERS:
+        return None
+
+    def _init(worker_id: int) -> None:
+        info = get_worker_info()
+        rank = os.environ.get("LOCAL_RANK") or os.environ.get("RANK") or "0"
+        pid = os.getpid()
+        num_workers = getattr(info, "num_workers", "?") if info else "?"
+        seed = getattr(info, "seed", "?") if info else "?"
+        print(
+            f"[DataLoader worker:{tag}] rank={rank} pid={pid} id={worker_id} num_workers={num_workers} seed={seed}",
+            flush=True,
+        )
+
+    return _init
 
 
 def _safe_loader(path: str) -> Image.Image:
@@ -154,6 +173,15 @@ def build_dataloaders(
     )
     if dataset_cfg.loader.prefetch_factor and dataset_cfg.loader.num_workers > 0:
         loader_kwargs["prefetch_factor"] = dataset_cfg.loader.prefetch_factor
+    train_loader_kwargs = dict(loader_kwargs)
+    val_loader_kwargs = dict(loader_kwargs)
+
+    train_worker_init = _get_worker_init_fn("train")
+    if train_worker_init is not None:
+        train_loader_kwargs["worker_init_fn"] = train_worker_init
+    val_worker_init = _get_worker_init_fn("val")
+    if val_worker_init is not None:
+        val_loader_kwargs["worker_init_fn"] = val_worker_init
 
     sns_config = None
     if dataset_cfg.augment and isinstance(dataset_cfg.augment, dict):
@@ -246,14 +274,14 @@ def build_dataloaders(
             train_dataset,
             sampler=sampler,
             drop_last=dataset_cfg.loader.drop_last,
-            **loader_kwargs,
+            **train_loader_kwargs,
         )
     else:
         train_loader = DataLoader(
             train_dataset,
             shuffle=shuffle_train,
             drop_last=dataset_cfg.loader.drop_last,
-            **loader_kwargs,
+            **train_loader_kwargs,
         )
 
     val_loader: Optional[DataLoader] = None
@@ -291,19 +319,19 @@ def build_dataloaders(
                     rank=rank,
                     shuffle=False,
                 )
-                val_loader = DataLoader(
-                    val_dataset,
-                    sampler=val_sampler,
-                    drop_last=False,
-                    **loader_kwargs,
-                )
-            else:
-                val_loader = DataLoader(
-                    val_dataset,
-                    shuffle=False,
-                    drop_last=False,
-                    **loader_kwargs,
-                )
+            val_loader = DataLoader(
+                val_dataset,
+                sampler=val_sampler,
+                drop_last=False,
+                **val_loader_kwargs,
+            )
+        else:
+            val_loader = DataLoader(
+                val_dataset,
+                shuffle=False,
+                drop_last=False,
+                **val_loader_kwargs,
+            )
 
     train_size = len(train_dataset)
     try:
