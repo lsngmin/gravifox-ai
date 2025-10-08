@@ -147,7 +147,7 @@ def setup_experiment_loggers(
 
     train_logger = get_train_logger(level)
     train_logger.setLevel(level)
-    train_logger.propagate = False
+    train_logger.propagate = True
     _clear_file_handlers(train_logger)
     train_handler = logging.FileHandler(train_path, encoding="utf-8")
     train_handler.setFormatter(logging.Formatter(_DEFAULT_FORMAT))
