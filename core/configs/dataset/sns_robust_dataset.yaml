@@ -1,6 +1,6 @@
 defaults:
   - base
-  - override /augment: sns_robust
+  - augment: sns_robust
   - _self_
 
 name: sns_robust_dataset

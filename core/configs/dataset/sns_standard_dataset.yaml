@@ -1,6 +1,6 @@
 defaults:
   - base
-  - override /augment: sns_standard
+  - augment: sns_standard
   - _self_
 
 name: sns_standard_dataset

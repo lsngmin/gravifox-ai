@@ -1,6 +1,6 @@
 defaults:
   - base
-  - override /augment: sns_light
+  - augment: sns_light
   - _self_
 
 name: sns_light_dataset
