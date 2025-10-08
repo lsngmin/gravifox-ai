@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-import sys
+
+from core.utils.logger import get_logger
 
 import yaml
 
@@ -29,6 +31,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+logger = get_logger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
@@ -164,7 +169,7 @@ def main() -> None:
 
     cfg_paths = list_matrix_configs(config_dir)
     if not cfg_paths:
-        print(f"[오류] 설정 디렉터리에 E## YAML이 없습니다: {config_dir}")
+        logger.error("설정 디렉터리에 E## YAML이 없습니다: %s", config_dir)
         sys.exit(1)
 
     # 읽은 순서가 E01..E16
@@ -176,11 +181,14 @@ def main() -> None:
 
     n = min(len(hp_list), len(run_paths))
     if n == 0:
-        print("[오류] 실행된 run 디렉터리를 찾지 못했습니다.")
+        logger.error("실행된 run 디렉터리를 찾지 못했습니다.")
         sys.exit(2)
     if len(hp_list) != len(run_paths):
-        print(
-            f"[경고] 설정({len(hp_list)})개와 run 디렉터리({len(run_paths)})개 수가 다릅니다. 앞에서부터 {n}개만 매핑합니다."
+        logger.warning(
+            "설정(%d)개와 run 디렉터리(%d)개 수가 다릅니다. 앞에서부터 %d개만 매핑합니다.",
+            len(hp_list),
+            len(run_paths),
+            n,
         )
 
     rows: List[Dict] = []
@@ -224,7 +232,7 @@ def main() -> None:
         "run_dir",
         "status",
     ]
-    print("\t".join(headers))
+    logger.info("\t".join(headers))
     for r in rows:
         def fmt(k: str) -> str:
             v = r.get(k)
@@ -232,7 +240,7 @@ def main() -> None:
                 return f"{v:.4f}"
             return "" if v is None else str(v)
 
-        print("\t".join(fmt(h) for h in headers))
+        logger.info("\t".join(fmt(h) for h in headers))
 
     if args.save_csv:
         import csv
@@ -242,9 +250,8 @@ def main() -> None:
             writer.writeheader()
             for r in rows:
                 writer.writerow({h: r.get(h) for h in headers})
-        print(f"CSV 저장 완료: {args.save_csv}")
+        logger.info("CSV 저장 완료: %s", args.save_csv)
 
 
 if __name__ == "__main__":
     main()
-

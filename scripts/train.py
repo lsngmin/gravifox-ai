@@ -109,8 +109,8 @@ def run_training(cfg: DictConfig) -> Path:
             try:
                 torch.cuda.set_device(int(local_rank_env))
                 preassigned_device = True
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("LOCAL_RANK 기반 torch.cuda.set_device 실패: %s", exc)
 
     accelerator = Accelerator()
     if torch.cuda.is_available() and not preassigned_device:
@@ -120,9 +120,8 @@ def run_training(cfg: DictConfig) -> Path:
                 torch.cuda.set_device(device)
             else:
                 torch.cuda.set_device(accelerator.local_process_index)
-        except Exception:
-            # 디바이스 고정 실패는 학습을 막지는 않음
-            pass
+        except Exception as exc:
+            logger.debug("torch.cuda.set_device 실패: %s", exc)
     set_seed((cfg.run.seed or 0) + accelerator.process_index)
     if cfg.run.seed is not None:
         try:

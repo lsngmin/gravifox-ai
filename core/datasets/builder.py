@@ -32,9 +32,14 @@ def _get_worker_init_fn(tag: str):
         pid = os.getpid()
         num_workers = getattr(info, "num_workers", "?") if info else "?"
         seed = getattr(info, "seed", "?") if info else "?"
-        print(
-            f"[DataLoader worker:{tag}] rank={rank} pid={pid} id={worker_id} num_workers={num_workers} seed={seed}",
-            flush=True,
+        logger.info(
+            "[DataLoader worker:%s] rank=%s pid=%s id=%s num_workers=%s seed=%s",
+            tag,
+            rank,
+            pid,
+            worker_id,
+            num_workers,
+            seed,
         )
 
     return _init
