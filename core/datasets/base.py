@@ -53,6 +53,7 @@ class LoaderConfig:
     pin_memory: bool = True
     persistent_workers: bool = True
     drop_last: bool = True
+    prefetch_factor: Optional[int] = None
 
 
 @dataclass

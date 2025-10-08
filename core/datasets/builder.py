@@ -152,6 +152,8 @@ def build_dataloaders(
         pin_memory=dataset_cfg.loader.pin_memory,
         persistent_workers=dataset_cfg.loader.persistent_workers and dataset_cfg.loader.num_workers > 0,
     )
+    if dataset_cfg.loader.prefetch_factor and dataset_cfg.loader.num_workers > 0:
+        loader_kwargs["prefetch_factor"] = dataset_cfg.loader.prefetch_factor
 
     sns_config = None
     if dataset_cfg.augment and isinstance(dataset_cfg.augment, dict):
