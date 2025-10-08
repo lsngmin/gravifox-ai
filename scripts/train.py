@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -67,8 +68,18 @@ def _build_train_cfg(cfg: DictConfig) -> TrainCfg:
 def run_training(cfg: DictConfig) -> Path:
     """Hydra DictConfig를 받아 단일 학습을 수행한다."""
 
-    accelerator = Accelerator()
+    preassigned_device = False
     if torch.cuda.is_available():
+        local_rank_env = os.environ.get("LOCAL_RANK")
+        if local_rank_env is not None:
+            try:
+                torch.cuda.set_device(int(local_rank_env))
+                preassigned_device = True
+            except Exception:
+                pass
+
+    accelerator = Accelerator()
+    if torch.cuda.is_available() and not preassigned_device:
         try:
             device = getattr(accelerator, "device", None)
             if isinstance(device, torch.device) and device.type == "cuda":
