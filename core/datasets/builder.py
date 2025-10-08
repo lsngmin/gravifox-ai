@@ -280,27 +280,28 @@ def build_dataloaders(
                 val_dataset = val_datasets[0]
             else:
                 val_dataset = ConcatDataset(val_datasets)
-        if distributed:
-            val_sampler = DistributedSampler(
-                val_dataset,
-                num_replicas=world_size,
-                rank=rank,
-                shuffle=False,
-            )
-            val_loader = DataLoader(
-                val_dataset,
-                sampler=val_sampler,
-                drop_last=False,
-                **loader_kwargs,
-            )
-        else:
-            val_loader = DataLoader(
-                val_dataset,
-                shuffle=False,
-                drop_last=False,
-                **loader_kwargs,
-            )
             val_size = len(val_dataset)
+
+            if distributed:
+                val_sampler = DistributedSampler(
+                    val_dataset,
+                    num_replicas=world_size,
+                    rank=rank,
+                    shuffle=False,
+                )
+                val_loader = DataLoader(
+                    val_dataset,
+                    sampler=val_sampler,
+                    drop_last=False,
+                    **loader_kwargs,
+                )
+            else:
+                val_loader = DataLoader(
+                    val_dataset,
+                    shuffle=False,
+                    drop_last=False,
+                    **loader_kwargs,
+                )
 
     train_size = len(train_dataset)
     try:
