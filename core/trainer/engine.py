@@ -368,12 +368,20 @@ class Trainer:
                 continue
 
             self.train_logger.info(
-                "에폭 %03d 완료 - train_loss=%.4f train_acc=%.4f val_loss=%.4f val_acc=%.4f",
+                (
+                    "에폭 %03d 완료 - train_loss=%.4f train_acc=%.4f "
+                    "val_loss=%.4f val_acc=%.4f val_f1=%.4f val_auc=%.4f "
+                    "val_ece=%.4f val_tpr@1%%=%.4f"
+                ),
                 epoch,
                 train_metrics.get("loss", 0.0),
                 train_metrics.get("acc", 0.0),
                 val_metrics.get("loss", 0.0),
                 val_metrics.get("acc", 0.0),
+                val_metrics.get("f1", 0.0),
+                val_metrics.get("auc", 0.0),
+                val_metrics.get("ece", 0.0),
+                val_metrics.get("tpr@fpr=1%", 0.0),
             )
 
             self.experiment.log_metrics(epoch, "train", train_metrics)

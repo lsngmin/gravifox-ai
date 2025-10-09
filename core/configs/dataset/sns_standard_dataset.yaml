@@ -5,9 +5,9 @@ defaults:
 
 name: sns_standard_dataset
 loader:
-  batch_size: 576
-  num_workers: 22
-  prefetch_factor: 10
+  batch_size: 512
+  num_workers: 20
+  prefetch_factor: 8
   drop_last: true
 train:
   transforms:
