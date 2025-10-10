@@ -11,7 +11,7 @@ from PIL import Image
 from core.utils.logger import get_logger
 
 from api.config import get_settings
-from api.services.inference import VitInferenceService
+from api.dependencies.inference import get_vit_service
 from api.services.mq import MQService, publish_failed, publish_progress, publish_result
 
 LOGGER = get_logger("api.workers.vit_worker")
@@ -33,7 +33,8 @@ async def run_analysis(
     """
 
     settings = get_settings()
-    vit_service = VitInferenceService(settings)
+    vit_service = get_vit_service()
+    await vit_service.ensure_ready()
     media_path = Path(settings.file_store_root) / upload_id
     if not media_path.is_file():
         await publish_failed(
