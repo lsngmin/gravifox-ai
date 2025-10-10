@@ -30,13 +30,13 @@ class HighPassFilter(nn.Module):
 
     def __init__(self, channels: int = 3):
         super().__init__()
-        kernel = torch.tensor([
+        base_kernel = torch.tensor([
             [0.0, -1.0, 0.0],
             [-1.0, 4.0, -1.0],
             [0.0, -1.0, 0.0],
         ], dtype=torch.float32)
-        weight = kernel.expand(channels, 1, 3, 3)
-        self.register_buffer("weight", weight)
+        kernel = base_kernel.view(1, 1, 3, 3).repeat(channels, 1, 1, 1).contiguous()
+        self.register_buffer("weight", kernel)
         self.groups = channels
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
