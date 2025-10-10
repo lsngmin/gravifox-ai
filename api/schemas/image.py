@@ -16,6 +16,7 @@ class ImagePredictionResponse(BaseModel):
     p_real: float = Field(..., description="실제(Real) 클래스 확률")
     p_ai: float = Field(..., description="생성(FAKE) 클래스 확률")
     confidence: float = Field(..., description="신뢰도 점수")
+    decision: str = Field(..., description="임계값 기반 최종 의사결정")
     class_names: List[str] = Field(..., description="모델 클래스 이름 목록")
     probabilities: List[float] = Field(..., description="클래스별 확률 분포")
 

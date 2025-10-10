@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import io
-from typing import Any, List, Optional
+from typing import Any, Iterable, List, Optional
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +11,7 @@ from PIL import Image
 
 from api import app as fastapi_app
 from api.dependencies.inference import (
+    get_calibrator,
     get_model_registry,
     get_runtime_settings,
     get_storage_service,
@@ -77,6 +78,28 @@ class _FakeRegistry:
         return self.list_models()[0]
 
 
+class _FakeCalibrator:
+    """테스트용 보정기."""
+
+    def calibrate(self, probs: Iterable[float], real_index: int):
+        """입력 확률을 그대로 사용하면서 의사결정을 계산한다."""
+
+        values = list(probs)
+        real_idx = real_index if real_index < len(values) else 0
+        p_real = values[real_idx]
+        return type(
+            "Calibration",
+            (),
+            {
+                "distribution": values,
+                "p_real": p_real,
+                "p_ai": 1 - p_real,
+                "confidence": max(values),
+                "decision": "real" if p_real >= 0.5 else "ai",
+            },
+        )()
+
+
 class _FakeSettings:
     """테스트용 설정."""
 
@@ -88,6 +111,11 @@ class _FakeSettings:
     file_ttl_hours = 1
     enable_mq = False
     rabbitmq_url = ""
+    vit_max_batch_size = 4
+    vit_max_batch_wait_ms = 5
+    calibration_temperature = 1.0
+    uncertainty_band_low = 0.45
+    uncertainty_band_high = 0.55
 
 
 @pytest.fixture(autouse=True)
@@ -98,6 +126,7 @@ def _override_dependencies():
     fastapi_app.dependency_overrides[get_storage_service] = lambda: _FakeStorage()
     fastapi_app.dependency_overrides[get_model_registry] = lambda: _FakeRegistry()
     fastapi_app.dependency_overrides[get_runtime_settings] = lambda: _FakeSettings()
+    fastapi_app.dependency_overrides[get_calibrator] = lambda: _FakeCalibrator()
     yield
     fastapi_app.dependency_overrides.clear()
 
@@ -122,6 +151,7 @@ def test_predict_image_success() -> None:
     body = response.json()
     assert body["model_version"] == "dummy-vit"
     assert pytest.approx(body["p_real"], rel=1e-3) == 0.7
+    assert body["decision"] == "real"
     assert body["class_names"] == ["REAL", "FAKE"]
 
 
