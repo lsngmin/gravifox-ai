@@ -1,3 +1,12 @@
+defaults:
+  - dataset: sns_standard_dataset
+  - augment: sns_standard
+  - optimizer: adamw
+  - scheduler: cosine
+  - trainer: default
+  - logging: default
+  - _self_
+
 seed: 1337
 
 model:
@@ -8,39 +17,35 @@ model:
     pretrained: true
     residual_embed_dim: 160
 
-train:
-  img_size: 224
-  batch_size: 512  # per-process batch (A40 2장 → global 1024)
+optimizer:
+  name: adamw
+  lr: 5.0e-5
+  weight_decay: 0.05
+
+scheduler:
+  name: cosine
+  warmup_epochs: 3
+  min_lr: 1.0e-6
+
+trainer:
   epochs: 24
-  optimizer:
-    name: adamw
-    lr: 5.0e-5
-    weight_decay: 0.05
-  scheduler:
-    name: cosine
-    warmup_epochs: 3
-    min_lr: 1.0e-6
-  grad_accum_steps: 2  # 메모리 여유 없을 때 누적 그라드로 안정화
+  grad_accum_steps: 2
   mixed_precision: fp16
+  label_smoothing: 0.05
   log_interval: 50
   criterion: ce
-  label_smoothing: 0.05
   early_stopping:
     enabled: true
-    monitor: val_loss
     patience: 5
-    mode: min
-  checkpoint:
-    save_best: true
     monitor: val_loss
     mode: min
 
-data:
-  datasets: []  # 샘플링 비활성화(직접 경로 사용)
-  # 실제 데이터 경로(폴더: real, z_ai)
-  train_dir: /home/smin/datasets/genimage/ADM/imagenet_ai_0508_adm/train
-  val_dir:   /home/smin/datasets/genimage/ADM/imagenet_ai_0508_adm/val
-  num_workers: 12
+dataset:
+  data_root: /home/smin/datasets/genimage
+  source: imagenet_ai_0508_adm
+  loader:
+    batch_size: 512
+    num_workers: 12
 
 augment:
   sns:
