@@ -31,6 +31,21 @@ class _FakeVitService:
         assert image.mode == "RGB"
         return [0.7, 0.3]
 
+    async def predict_image_with_metadata(
+        self, image: Image.Image
+    ) -> tuple[List[float], dict[str, Any]]:
+        """메타데이터를 포함한 추론 결과를 반환한다."""
+
+        probs = await self.predict_image(image)
+        meta = {
+            "mode": "single",
+            "n_patches": 1,
+            "patch_count": 1,
+            "scales": [224],
+            "aggregate": "mean",
+        }
+        return probs, meta
+
     async def get_pipeline(self):
         """테스트용 파이프라인 정보를 반환한다."""
 
@@ -38,6 +53,12 @@ class _FakeVitService:
             real_index = 0
             class_names = ["REAL", "FAKE"]
             model_name = "dummy-vit"
+            inference_mode = "single"
+            inference_n_patches = 1
+            inference_scales = (224,)
+            inference_aggregate = "mean"
+            uncertainty_band = (0.45, 0.55)
+            device = "cpu"
 
         return _Pipeline()
 
@@ -113,6 +134,7 @@ class _FakeSettings:
     rabbitmq_url = ""
     vit_max_batch_size = 4
     vit_max_batch_wait_ms = 5
+    vit_enable_multipatch = True
     calibration_temperature = 1.0
     uncertainty_band_low = 0.45
     uncertainty_band_high = 0.55

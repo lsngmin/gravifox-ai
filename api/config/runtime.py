@@ -92,6 +92,7 @@ class RuntimeSettings(BaseSettings):
     vit_device_name: str = Field(default="auto", env="TVB_VIT_DEVICE")
     vit_max_batch_size: int = Field(default=8, env="TVB_VIT_MAX_BATCH")
     vit_max_batch_wait_ms: int = Field(default=8, env="TVB_VIT_BATCH_WAIT_MS")
+    vit_enable_multipatch: bool = Field(default=True, env="TVB_VIT_ENABLE_MULTIPATCH")
 
     model_catalog_path: Path = Field(
         default=_DEFAULT_MODEL_CATALOG, env="MODEL_CATALOG_PATH"

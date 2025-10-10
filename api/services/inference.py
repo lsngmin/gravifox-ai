@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
 import yaml
@@ -19,6 +19,7 @@ from PIL import Image
 
 from core.datasets.base import load_dataset_config
 from core.datasets.transforms import build_val_transforms
+from core.models.multipatch import aggregate_scores, generate_patches
 from core.models.registry import get_model
 from core.utils.logger import get_logger, log_time
 
@@ -37,6 +38,11 @@ class VitPipeline:
     real_index: int
     run_dir: Path
     model_name: str
+    inference_mode: str
+    inference_scales: Tuple[int, ...]
+    inference_n_patches: int
+    inference_aggregate: str
+    uncertainty_band: Tuple[float, float]
 
 
 class VitInferenceService:
@@ -74,18 +80,52 @@ class VitInferenceService:
         await self._batch_queue.close()
 
     async def predict_image(self, image: Image.Image) -> List[float]:
-        """이미지에 대한 위조 확률 분포를 반환한다.
+        """이미지에 대한 위조 확률 분포를 반환한다."""
 
-        Args:
-            image: PIL 이미지 객체.
+        probs, _ = await self.predict_image_with_metadata(image)
+        return probs
 
-        Returns:
-            클래스별 확률 분포 리스트.
-        """
+    async def predict_image_with_metadata(
+        self, image: Image.Image
+    ) -> Tuple[List[float], Dict[str, Any]]:
+        """이미지 추론과 함께 메타데이터를 반환한다."""
 
         pipeline = await self._ensure_pipeline()
-        tensor = self._prepare_tensor(image, pipeline)
-        return await self._batch_queue.enqueue(tensor)
+        metadata: Dict[str, Any] = {
+            "mode": pipeline.inference_mode,
+            "n_patches": pipeline.inference_n_patches,
+            "scales": list(pipeline.inference_scales),
+            "aggregate": pipeline.inference_aggregate,
+        }
+
+        rgb_image = image if image.mode == "RGB" else image.convert("RGB")
+        use_multipatch = self._should_use_multipatch(pipeline)
+
+        if use_multipatch:
+            patch_tensors = self._prepare_multipatch_tensors(rgb_image, pipeline)
+            if len(patch_tensors) <= 1:
+                use_multipatch = False
+            else:
+                metadata["mode"] = "multi"
+                metadata["patch_count"] = len(patch_tensors)
+                self._logger.debug(
+                    "멀티패치 추론 실행 - patches=%d scales=%s aggregate=%s",
+                    len(patch_tensors),
+                    list(pipeline.inference_scales),
+                    pipeline.inference_aggregate,
+                )
+                patch_futures = [
+                    self._batch_queue.enqueue(tensor) for tensor in patch_tensors
+                ]
+                patch_distributions = await asyncio.gather(*patch_futures)
+                aggregated = self._aggregate_patch_probs(patch_distributions, pipeline)
+                return aggregated, metadata
+
+        tensor = self._prepare_tensor(rgb_image, pipeline)
+        metadata["mode"] = "single"
+        metadata["patch_count"] = 1
+        probs = await self._batch_queue.enqueue(tensor)
+        return probs, metadata
 
     async def ensure_ready(self) -> None:
         """파이프라인 초기화가 완료되도록 보장한다.
@@ -157,6 +197,7 @@ class VitInferenceService:
         real_index = self._resolve_real_index(class_names)
         model_cfg = meta.get("model") or {}
         model_name = str(model_cfg.get("name") or "unknown")
+        inference_cfg = self._resolve_inference_config(meta)
         return VitPipeline(
             model=model,
             transform=transform,
@@ -165,6 +206,7 @@ class VitInferenceService:
             real_index=real_index,
             run_dir=run_dir,
             model_name=model_name,
+            **inference_cfg,
         )
 
     def _resolve_device(self) -> torch.device:
@@ -307,10 +349,60 @@ class VitInferenceService:
 
         class_names = meta.get("dataset", {}).get("class_names")
         if isinstance(class_names, list):
-            return [str(name) for name in class_names]
+                return [str(name) for name in class_names]
         if isinstance(class_names, tuple):
             return [str(name) for name in class_names]
         return []
+
+    def _resolve_inference_config(self, meta: dict[str, Any]) -> Dict[str, Any]:
+        """멀티패치/멀티스케일 추론 설정을 계산한다."""
+
+        raw_cfg = meta.get("inference") or {}
+        raw_scales = raw_cfg.get("multiscale") or raw_cfg.get("scales") or ()
+        if isinstance(raw_scales, (int, float)):
+            scales = (int(raw_scales),)
+        elif isinstance(raw_scales, (list, tuple)):
+            normalized: List[int] = []
+            for value in raw_scales:
+                try:
+                    normalized.append(int(float(value)))
+                except (TypeError, ValueError):
+                    continue
+            scales = tuple(sorted({val for val in normalized if val > 0}))
+        else:
+            scales = ()
+
+        try:
+            n_patches = int(raw_cfg.get("n_patches") or raw_cfg.get("patches") or 1)
+        except (TypeError, ValueError):
+            n_patches = 1
+        if n_patches < 1:
+            n_patches = 1
+
+        aggregate = str(raw_cfg.get("aggregate") or "mean").lower()
+        if aggregate not in {"mean", "max", "quality_weighted"}:
+            aggregate = "mean"
+
+        mode = "multi" if n_patches > 1 or len(scales) > 1 else "single"
+        if not self._settings.vit_enable_multipatch:
+            mode = "single"
+            n_patches = 1
+
+        if not scales:
+            scales = (224,)
+
+        uncertainty_band = (
+            float(self._settings.uncertainty_band_low),
+            float(self._settings.uncertainty_band_high),
+        )
+
+        return {
+            "inference_mode": mode,
+            "inference_scales": scales,
+            "inference_n_patches": n_patches,
+            "inference_aggregate": aggregate,
+            "uncertainty_band": uncertainty_band,
+        }
 
     def _resolve_real_index(self, class_names: List[str]) -> int:
         """실제(REAL) 클래스의 인덱스를 식별한다.
@@ -341,9 +433,80 @@ class VitInferenceService:
             배치 차원이 포함된 torch 텐서.
         """
 
-        rgb = image.convert("RGB")
+        rgb = image if image.mode == "RGB" else image.convert("RGB")
         tensor = pipeline.transform(rgb).unsqueeze(0)
         return tensor.contiguous()
+
+    def _should_use_multipatch(self, pipeline: VitPipeline) -> bool:
+        """멀티패치 추론 사용 여부를 결정한다."""
+
+        if not self._settings.vit_enable_multipatch:
+            return False
+        if pipeline.inference_mode != "multi":
+            return False
+        return pipeline.inference_n_patches > 1
+
+    def _prepare_multipatch_tensors(
+        self, image: Image.Image, pipeline: VitPipeline
+    ) -> List[torch.Tensor]:
+        """멀티패치 텐서 배치를 생성한다."""
+
+        sizes: Sequence[int] = pipeline.inference_scales or (224,)
+        patches = generate_patches(
+            image, sizes=sizes, n_patches=pipeline.inference_n_patches
+        )
+        tensors: List[torch.Tensor] = []
+        for patch in patches:
+            rgb_patch = patch if patch.mode == "RGB" else patch.convert("RGB")
+            tensor = pipeline.transform(rgb_patch).unsqueeze(0).contiguous()
+            tensors.append(tensor)
+        return tensors
+
+    def _aggregate_patch_probs(
+        self, patch_probs: Sequence[Sequence[float]], pipeline: VitPipeline
+    ) -> List[float]:
+        """패치별 확률을 하나의 분포로 병합한다."""
+
+        if not patch_probs:
+            raise ValueError("patch_probs is empty")
+        first = patch_probs[0]
+        num_classes = len(first)
+        if num_classes == 0:
+            raise ValueError("probability distribution must be non-empty")
+        real_idx = pipeline.real_index if pipeline.real_index < num_classes else 0
+        if num_classes != 2:
+            self._logger.warning(
+                "멀티패치 집계는 2-클래스 모델에서 최적화되어 있습니다 (classes=%d)",
+                num_classes,
+            )
+        ai_idx = 1 if real_idx == 0 else 0
+
+        patch_scores = []
+        for dist in patch_probs:
+            if len(dist) != num_classes:
+                raise ValueError("inconsistent probability dimensions across patches")
+            p_real = float(dist[real_idx])
+            if num_classes >= 2 and ai_idx < num_classes:
+                p_ai = float(dist[ai_idx])
+            else:
+                p_ai = float(max(0.0, 1.0 - p_real))
+            patch_scores.append({"ai": p_ai, "real": p_real})
+
+        aggregated = aggregate_scores(
+            patch_scores, method=pipeline.inference_aggregate or "mean"
+        )
+
+        if num_classes >= 2 and ai_idx < num_classes:
+            fused = [float(value) for value in first]
+            fused[real_idx] = aggregated["real"]
+            fused[ai_idx] = aggregated["ai"]
+        else:
+            fused = [aggregated["real"], aggregated["ai"]]
+
+        total = sum(fused)
+        if total > 0:
+            fused = [float(value / total) for value in fused]
+        return fused
 
     async def _predict_batch(self, batch: torch.Tensor) -> torch.Tensor:
         """비동기 배치 추론을 실행한다.

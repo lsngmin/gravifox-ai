@@ -44,6 +44,7 @@ RABBITMQ_USE_TLS=true
 ## MQ & 워커 연동
 - MQ 관련 코드는 `api/services/mq.py`에 정리했어요.
 - 백그라운드 워커는 `api/workers/vit_worker.py`에서 ViT 추론을 수행해요.
+- MQ 소비 루프는 `python -m api.workers.runner`로 실행하면 돼요.
 - `ENABLE_MQ`가 `true`이고 `RABBITMQ_URL`이 설정된 경우 FastAPI 시작 시 MQ 연결을 시도해요.
 - 워커 실행 예시는 아래와 같아요.
 
