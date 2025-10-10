@@ -2,7 +2,8 @@
 
 목적:
     ViT 기반 이미지 위조 판별 파이프라인을 초기화하고 FastAPI 및 워커에서
-    재사용할 수 있도록 비동기 친화적인 서비스 클래스를 제공한다.
+    재사용할 수 있도록 비동기 친화적인 서비스 클래스를 제공한다. 비동기
+    배치 큐를 도입해 GPU 활용률을 높이고, 단계별 로깅을 강화한다.
 """
 
 from __future__ import annotations
@@ -19,9 +20,10 @@ from PIL import Image
 from core.datasets.base import load_dataset_config
 from core.datasets.transforms import build_val_transforms
 from core.models.registry import get_model
-from core.utils.logger import get_logger
+from core.utils.logger import get_logger, log_time
 
 from api.config import RuntimeSettings
+from api.services.batching import BatchInferenceQueue
 
 
 @dataclass
@@ -53,6 +55,23 @@ class VitInferenceService:
         self._init_error: Optional[Exception] = None
         self._init_lock = asyncio.Lock()
         self._predict_lock = asyncio.Lock()
+        self._batch_queue = BatchInferenceQueue(
+            max_batch_size=settings.vit_max_batch_size,
+            max_wait_ms=settings.vit_max_batch_wait_ms,
+            runner=self._predict_batch,
+            queue_name="vit",
+        )
+
+    async def startup(self) -> None:
+        """FastAPI 애플리케이션 시작 시 초기화를 수행한다."""
+
+        await self.ensure_ready()
+        await self._batch_queue.start()
+
+    async def shutdown(self) -> None:
+        """FastAPI 종료 시 자원을 정리한다."""
+
+        await self._batch_queue.close()
 
     async def predict_image(self, image: Image.Image) -> List[float]:
         """이미지에 대한 위조 확률 분포를 반환한다.
@@ -65,14 +84,8 @@ class VitInferenceService:
         """
 
         pipeline = await self._ensure_pipeline()
-        tensor = (
-            pipeline.transform(image.convert("RGB")).unsqueeze(0).to(pipeline.device)
-        )
-        async with self._predict_lock:
-            with torch.inference_mode():
-                logits = pipeline.model(tensor)
-                probs = torch.softmax(logits, dim=1)
-        return probs.squeeze(0).detach().cpu().tolist()
+        tensor = self._prepare_tensor(image, pipeline)
+        return await self._batch_queue.enqueue(tensor)
 
     async def ensure_ready(self) -> None:
         """파이프라인 초기화가 완료되도록 보장한다.
@@ -126,6 +139,7 @@ class VitInferenceService:
                 raise
         return self._pipeline
 
+    @log_time
     def _initialize_pipeline(self) -> VitPipeline:
         """파이프라인 구성 요소를 동기적으로 초기화한다.
 
@@ -165,6 +179,7 @@ class VitInferenceService:
             return torch.device(name)
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    @log_time
     def _resolve_run_dir(self) -> Path:
         """실험 실행 디렉터리를 결정한다.
 
@@ -187,6 +202,7 @@ class VitInferenceService:
             raise FileNotFoundError(f"실험 루트에 실행 기록이 없습니다: {root}")
         return candidates[-1]
 
+    @log_time
     def _load_meta(self, run_dir: Path) -> dict[str, Any]:
         """meta.yaml 파일을 로드한다.
 
@@ -203,6 +219,7 @@ class VitInferenceService:
         with meta_path.open("r", encoding="utf-8") as fp:
             return yaml.safe_load(fp) or {}
 
+    @log_time
     def _build_transform(self, meta: dict[str, Any]):
         """검증용 변환 파이프라인을 구성한다.
 
@@ -217,6 +234,7 @@ class VitInferenceService:
         config = load_dataset_config(dataset_cfg)
         return build_val_transforms(config)
 
+    @log_time
     def _resolve_checkpoint(self, run_dir: Path) -> Path:
         """사용할 체크포인트 경로를 반환한다.
 
@@ -241,6 +259,7 @@ class VitInferenceService:
             f"체크포인트를 찾을 수 없습니다: {ckpt_path} 또는 {fallback}"
         )
 
+    @log_time
     def _load_model(
         self, meta: dict[str, Any], checkpoint: Path, device: torch.device
     ) -> torch.nn.Module:
@@ -308,6 +327,41 @@ class VitInferenceService:
             if candidate in lowered:
                 return lowered.index(candidate)
         return 0
+
+    def _prepare_tensor(
+        self, image: Image.Image, pipeline: VitPipeline
+    ) -> torch.Tensor:
+        """이미지를 배치 추론에 맞게 텐서로 변환한다.
+
+        Args:
+            image: 입력 PIL 이미지.
+            pipeline: 현재 활성화된 추론 파이프라인.
+
+        Returns:
+            배치 차원이 포함된 torch 텐서.
+        """
+
+        rgb = image.convert("RGB")
+        tensor = pipeline.transform(rgb).unsqueeze(0)
+        return tensor.contiguous()
+
+    async def _predict_batch(self, batch: torch.Tensor) -> torch.Tensor:
+        """비동기 배치 추론을 실행한다.
+
+        Args:
+            batch: (N, C, H, W) 형태의 입력 텐서.
+
+        Returns:
+            소프트맥스 확률 텐서.
+        """
+
+        pipeline = await self._ensure_pipeline()
+        async with self._predict_lock:
+            with torch.inference_mode():
+                device_batch = batch.to(pipeline.device, non_blocking=True)
+                logits = pipeline.model(device_batch)
+                probs = torch.softmax(logits, dim=1)
+        return probs.detach().cpu()
 
 
 __all__ = ["VitInferenceService", "VitPipeline"]

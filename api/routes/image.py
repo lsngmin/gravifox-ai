@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
 from PIL import Image
 
 from api.dependencies.inference import (
+    get_calibrator,
     get_model_registry,
     get_runtime_settings,
     get_storage_service,
@@ -21,6 +22,7 @@ from api.schemas.image import (
     ModelListResponse,
     UploadResponse,
 )
+from api.services.calibration import AdaptiveThresholdCalibrator
 from api.services.inference import VitInferenceService
 from api.services.registry import ModelRegistryService
 from api.services.storage import MediaStorageService
@@ -32,6 +34,7 @@ router = APIRouter()
 async def predict_image(
     file: UploadFile = File(...),
     vit_service: VitInferenceService = Depends(get_vit_service),
+    calibrator: AdaptiveThresholdCalibrator = Depends(get_calibrator),
 ) -> ImagePredictionResponse:
     """이미지 위조 확률을 예측한다.
 
@@ -54,20 +57,18 @@ async def predict_image(
     finally:
         image.close()
     pipeline = await vit_service.get_pipeline()
-    real_index = pipeline.real_index if pipeline.real_index < len(probs) else 0
-    p_real = float(probs[real_index]) if probs else 0.0
-    p_ai = float(1.0 - p_real)
-    confidence = float(max(probs)) if probs else 0.0
+    calibration = calibrator.calibrate(probs, pipeline.real_index)
     latency_ms = (time.perf_counter() - start) * 1000.0
     return ImagePredictionResponse(
         timestamp=time.time(),
         model_version=pipeline.model_name,
         latency_ms=round(latency_ms, 2),
-        p_real=round(p_real, 6),
-        p_ai=round(p_ai, 6),
-        confidence=round(confidence, 6),
+        p_real=round(calibration.p_real, 6),
+        p_ai=round(calibration.p_ai, 6),
+        confidence=round(calibration.confidence, 6),
+        decision=calibration.decision,
         class_names=pipeline.class_names,
-        probabilities=[float(round(p, 6)) for p in probs],
+        probabilities=[float(round(p, 6)) for p in calibration.distribution],
     )
 
 

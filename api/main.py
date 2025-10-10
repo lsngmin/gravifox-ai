@@ -44,6 +44,8 @@ async def on_startup() -> None:
     settings = get_runtime_settings()
     storage = get_storage_service()
     asyncio.create_task(storage.run_cleanup_loop())
+    vit_service = get_vit_service()
+    await vit_service.startup()
     if settings.enable_mq and settings.rabbitmq_url:
         mq = get_mq_service()
         try:
@@ -66,6 +68,8 @@ async def on_shutdown() -> None:
         await mq.close()
     except Exception:  # pragma: no cover - best effort
         LOGGER.warning("MQ 연결 종료 중 오류가 발생했습니다", exc_info=True)
+    vit_service = get_vit_service()
+    await vit_service.shutdown()
 
 
 app.include_router(image.router)

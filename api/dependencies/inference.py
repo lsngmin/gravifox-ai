@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from api.config import RuntimeSettings, get_settings
+from api.services.calibration import AdaptiveThresholdCalibrator
 from api.services.inference import VitInferenceService
 from api.services.mq import MQService
 from api.services.registry import ModelRegistryService
@@ -51,6 +52,27 @@ def get_vit_service() -> VitInferenceService:
     """
 
     return _vit_service_singleton()
+
+
+@lru_cache(maxsize=1)
+def _calibrator_singleton() -> AdaptiveThresholdCalibrator:
+    """추론 결과 보정기를 싱글톤으로 생성한다.
+
+    Returns:
+        보정기 인스턴스.
+    """
+
+    return AdaptiveThresholdCalibrator(get_runtime_settings())
+
+
+def get_calibrator() -> AdaptiveThresholdCalibrator:
+    """FastAPI 라우트용 보정기 의존성.
+
+    Returns:
+        추론 결과 보정기 인스턴스.
+    """
+
+    return _calibrator_singleton()
 
 
 @lru_cache(maxsize=1)
@@ -122,4 +144,5 @@ __all__ = [
     "get_storage_service",
     "get_model_registry",
     "get_mq_service",
+    "get_calibrator",
 ]

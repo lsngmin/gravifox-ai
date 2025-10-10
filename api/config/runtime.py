@@ -71,6 +71,8 @@ class RuntimeSettings(BaseSettings):
     vit_run_root: Path = Field(default=_DEFAULT_RUN_ROOT, env="TVB_VIT_RUN_ROOT")
     vit_checkpoint_name: str = Field(default="best.pt", env="TVB_VIT_CHECKPOINT")
     vit_device_name: str = Field(default="auto", env="TVB_VIT_DEVICE")
+    vit_max_batch_size: int = Field(default=8, env="TVB_VIT_MAX_BATCH")
+    vit_max_batch_wait_ms: int = Field(default=8, env="TVB_VIT_BATCH_WAIT_MS")
 
     model_catalog_path: Path = Field(
         default=_DEFAULT_MODEL_CATALOG, env="MODEL_CATALOG_PATH"
@@ -78,6 +80,10 @@ class RuntimeSettings(BaseSettings):
 
     enable_mq: bool = Field(default=True, env="ENABLE_MQ")
     tvb_max_concurrency: int = Field(default=1, env="TVB_MAX_CONCURRENCY")
+
+    calibration_temperature: float = Field(default=1.2, env="CALIBRATION_TEMPERATURE")
+    uncertainty_band_low: float = Field(default=0.45, env="UNCERTAINTY_BAND_LOW")
+    uncertainty_band_high: float = Field(default=0.55, env="UNCERTAINTY_BAND_HIGH")
 
     rabbitmq_url: str = Field(default="", env="RABBITMQ_URL")
     rabbitmq_use_tls: Optional[bool] = Field(default=None, env="RABBITMQ_USE_TLS")
