@@ -345,11 +345,11 @@ async def run_analysis(mq: MQ, job_id: str, upload_id: str, params: Optional[Dic
             await asyncio.sleep(0.6)
             print(f"[WORKER] progress INFER 50% ({'image' if ext in IMAGE_EXTS else 'video'})")
             await publish_progress(mq, job_id, {"status": "RUNNING", "stage": "INFER", "progress": 50, "etaSec": 6, **model_meta})
-        result = run_media(
-            path=str(media_path),
-            det_sess=det_sess,
-            cls_sess=cls_sess,
-            conf_th=CONF,
+            result = run_media(
+                path=str(media_path),
+                det_sess=det_sess,
+                cls_sess=cls_sess,
+                conf_th=CONF,
                 sample_fps=FPS,
                 clip_len=CLIP_LEN,
                 clip_stride=CLIP_STRIDE,
