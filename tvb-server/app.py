@@ -14,9 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import tempfile, cv2
 import onnxruntime as ort
-# BNKPS_MODEL_PATH = "tvb-model/scrfd/bnkps.onnx"
-# scrfd_sess = ort.InferenceSession(BNKPS_MODEL_PATH, providers=["CPUExecutionProvider"])
-# detector = SCRFDDetector(session=scrfd_sess)
 
 import os, uuid, datetime as dt, asyncio
 from typing import Any
@@ -92,7 +89,11 @@ def _resolve_run_dir() -> Path:
             raise FileNotFoundError(f"VIT_RUN_DIR 경로를 찾을 수 없습니다: {run_dir}")
         return run_dir
 
-    root = VIT_RUN_ROOT.expanduser().resolve() if VIT_RUN_ROOT is not None else PROJECT_ROOT / "experiments" / "vit_residual_fusion"
+    root = (
+        VIT_RUN_ROOT.expanduser().resolve()
+        if VIT_RUN_ROOT is not None
+        else PROJECT_ROOT / "experiments" / "vit_residual_fusion"
+    )
 
     if not root.is_dir():
         raise FileNotFoundError(f"실험 루트 디렉토리를 찾을 수 없습니다: {root}")
@@ -119,9 +120,13 @@ def _resolve_checkpoint(run_dir: Path) -> Path:
         return ckpt_path
     fallback = run_dir / "checkpoints" / "last.pt"
     if fallback.is_file():
-        logger.warning("선호한 체크포인트 %s 를 찾지 못해 last.pt를 사용합니다", ckpt_path.name)
+        logger.warning(
+            "선호한 체크포인트 %s 를 찾지 못해 last.pt를 사용합니다", ckpt_path.name
+        )
         return fallback
-    raise FileNotFoundError(f"체크포인트를 찾을 수 없습니다: {ckpt_path} 또는 {fallback}")
+    raise FileNotFoundError(
+        f"체크포인트를 찾을 수 없습니다: {ckpt_path} 또는 {fallback}"
+    )
 
 
 def _resolve_real_index(class_names: Any) -> int:
@@ -140,7 +145,9 @@ def _build_transform(meta: dict[str, Any]):
     return build_val_transforms(config)
 
 
-def _load_torch_model(meta: dict[str, Any], checkpoint: Path, device: torch.device) -> torch.nn.Module:
+def _load_torch_model(
+    meta: dict[str, Any], checkpoint: Path, device: torch.device
+) -> torch.nn.Module:
     model_cfg = meta.get("model") or {}
     name = model_cfg.get("name")
     if not name:
@@ -186,7 +193,12 @@ def _initialize_vit_pipeline():
         class_names = []
     real_index = _resolve_real_index(class_names)
 
-    logger.info("VIT 추론 파이프라인 초기화 완료 - run=%s device=%s checkpoint=%s", run_dir, device, checkpoint.name)
+    logger.info(
+        "VIT 추론 파이프라인 초기화 완료 - run=%s device=%s checkpoint=%s",
+        run_dir,
+        device,
+        checkpoint.name,
+    )
     return {
         "model": model,
         "transform": transform,
@@ -220,18 +232,26 @@ def _infer_kind(filename: str, content_type: Optional[str]) -> str:
         return "video"
     return "unknown"
 
+
 app = FastAPI()
 
 # Allow dev origins; tighten in production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("CORS_ALLOW_ORIGINS", "*").split(",") if os.environ.get("CORS_ALLOW_ORIGINS") else ["*"],
+    allow_origins=(
+        os.environ.get("CORS_ALLOW_ORIGINS", "*").split(",")
+        if os.environ.get("CORS_ALLOW_ORIGINS")
+        else ["*"]
+    ),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 class Data(BaseModel):
     message: str
+
 
 def _predict_with_vit(image: Image.Image) -> list[float]:
     if "error" in _vit_pipeline:
@@ -251,6 +271,7 @@ def _predict_with_vit(image: Image.Image) -> list[float]:
 
 def predict_image(image: Image.Image):
     return _predict_with_vit(image)
+
 
 @app.post("/predeict/video/")
 async def predict_video():
@@ -321,7 +342,10 @@ UPLOAD_TOKEN = os.environ.get("UPLOAD_TOKEN")
 
 
 @app.post("/upload")
-async def upload_media(file: UploadFile = File(...), x_upload_token: Optional[str] = Header(default=None, alias="X-Upload-Token")):
+async def upload_media(
+    file: UploadFile = File(...),
+    x_upload_token: Optional[str] = Header(default=None, alias="X-Upload-Token"),
+):
     try:
         if UPLOAD_TOKEN and x_upload_token != UPLOAD_TOKEN:
             raise HTTPException(status_code=401, detail="invalid upload token")
@@ -329,7 +353,9 @@ async def upload_media(file: UploadFile = File(...), x_upload_token: Optional[st
         if kind == "unknown":
             raise HTTPException(status_code=415, detail="unsupported media type")
 
-        max_bytes = int((MAX_IMAGE_MB if kind == "image" else MAX_VIDEO_MB) * 1024 * 1024)
+        max_bytes = int(
+            (MAX_IMAGE_MB if kind == "image" else MAX_VIDEO_MB) * 1024 * 1024
+        )
 
         now = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%S")
         suffix = Path(file.filename or "media").suffix.lower()
@@ -378,8 +404,10 @@ async def list_available_models():
             for m in catalog
         ],
     }
+
+
 @app.get("/")
-async  def index():
+async def index():
     return {"received_message": "Hello World"}
 
 
@@ -391,7 +419,7 @@ async def _ttl_cleanup_loop():
     while True:
         try:
             now = dt.datetime.utcnow()
-            for p in FILE_STORE_ROOT.glob('*'):
+            for p in FILE_STORE_ROOT.glob("*"):
                 try:
                     mtime = dt.datetime.utcfromtimestamp(p.stat().st_mtime)
                     if now - mtime > ttl:
@@ -422,6 +450,7 @@ async def _on_startup():
             sem = asyncio.Semaphore(max(1, TVB_MAX_CONCURRENCY))
 
             from typing import Dict
+
             async def handle_request(payload: Dict[str, Any]):
                 job_id = payload.get("jobId")
                 upload_id = payload.get("uploadId")
@@ -434,7 +463,13 @@ async def _on_startup():
                         except Exception as _e:
                             try:
                                 from mq import publish_failed as _pf
-                                await _pf(mq, job_id or "", f"analysis error: {_e}", reason_code="WORKER_EXCEPTION")
+
+                                await _pf(
+                                    mq,
+                                    job_id or "",
+                                    f"analysis error: {_e}",
+                                    reason_code="WORKER_EXCEPTION",
+                                )
                             except Exception:
                                 pass
 
