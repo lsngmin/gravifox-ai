@@ -1,7 +1,5 @@
 """추론 확률 보정 및 임계값 결정을 담당하는 모듈."""
 
-"""추론 확률 보정 로직을 제공하는 모듈."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
