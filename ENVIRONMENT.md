@@ -46,3 +46,20 @@ FastAPI 및 워커는 `settings.py`의 `RABBITMQ_URL`을 사용합니다. 현재
 - `TVB_MAX_CONCURRENCY`: 동시에 처리할 분석 작업 수(기본 1). FastAPI에서 큐로 작업을 넘길 때 사용할 수 있으며 필요 시 환경 변수로 설정합니다.
 
 Spring Boot(dev/test)는 `application-dev.yml`, `application-test.yml`에서 AI 서버 MQ(117.17.149.66:5000, TLS 비활성)로 설정되어 있습니다. 필요 시 `SPRING_RABBITMQ_*` 환경 변수로 덮어쓸 수 있습니다.
+
+## Vision Transformer 추론 설정
+FastAPI 이미지 업로드 엔드포인트는 VIT 체크포인트를 직접 로드하여 추론합니다. 기본 경로는 `experiments/vit_residual_fusion` 아래 최신 실행을 사용하며, 필요 시 `.env` 파일을 통해 다음 키로 덮어쓸 수 있습니다.
+
+| 키 | 기본값 | 설명 |
+| --- | --- | --- |
+| `TVB_VIT_RUN_ROOT` | `<repo>/experiments/vit_residual_fusion` | 실험 루트 디렉토리 |
+| `TVB_VIT_RUN_DIR` | (자동) | 특정 실행 폴더를 강제로 지정하려면 설정 |
+| `TVB_VIT_CHECKPOINT` | `best.pt` | 사용할 체크포인트 파일명 |
+| `TVB_VIT_DEVICE` | `auto` | `cuda`, `cpu`, `cuda:0` 등 PyTorch 디바이스 문자열 |
+
+`.env` 예시:
+```env
+TVB_VIT_RUN_ROOT=/home/smin/tvb/tvb-ai/experiments/vit_residual_fusion
+TVB_VIT_CHECKPOINT=last.pt
+TVB_VIT_DEVICE=cuda:0
+```

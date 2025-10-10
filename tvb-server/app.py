@@ -1,24 +1,18 @@
 import sys
+import time
+import logging
+import io
+import json
 from pathlib import Path
+from datetime import datetime
 
-_THIS_DIR = Path(__file__).resolve().parent
-_THIS_DIR_STR = str(_THIS_DIR)
-if _THIS_DIR_STR not in sys.path:
-    sys.path.insert(0, _THIS_DIR_STR)
-
-import tf_keras
-from pydantic import BaseModel
-from fastapi.responses import JSONResponse
-from tf_keras.src.utils import load_img, img_to_array
+import yaml
+import torch
+from PIL import Image
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import tempfile, cv2
-from PIL import Image
-import io, json
-import numpy as np
-import tensorflow as tf
-import time
-from datetime import datetime
 import onnxruntime as ort
 # BNKPS_MODEL_PATH = "tvb-model/scrfd/bnkps.onnx"
 # scrfd_sess = ort.InferenceSession(BNKPS_MODEL_PATH, providers=["CPUExecutionProvider"])
@@ -26,9 +20,21 @@ import onnxruntime as ort
 
 import os, uuid, datetime as dt, asyncio
 from typing import Any
+from typing import Optional
 
-from settings import ENABLE_MQ, TVB_MAX_CONCURRENCY
-from model_registry import list_models, get_default_model
+_THIS_DIR = Path(__file__).resolve().parent
+_THIS_DIR_STR = str(_THIS_DIR)
+if _THIS_DIR_STR not in sys.path:
+    sys.path.insert(0, _THIS_DIR_STR)
+
+PROJECT_ROOT = _THIS_DIR.parent
+PROJECT_ROOT_STR = str(PROJECT_ROOT)
+if PROJECT_ROOT_STR not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT_STR)
+
+from core.datasets.base import load_dataset_config
+from core.datasets.transforms import build_val_transforms
+from core.models.registry import get_model
 from detection.gf1.config import (
     create_onnx_session,
     DET_ONNX_PATH,
@@ -51,6 +57,15 @@ from detection.gf1.config import (
     POSE_DELTA_OUTLIER,
 )
 from detection.gf1 import run_video
+from model_registry import list_models, get_default_model
+from settings import (
+    ENABLE_MQ,
+    TVB_MAX_CONCURRENCY,
+    VIT_CHECKPOINT_NAME,
+    VIT_DEVICE_NAME,
+    VIT_RUN_DIR,
+    VIT_RUN_ROOT,
+)
 
 # Unified file store root via env so FastAPI and worker see the same path
 # Default: /tmp/uploads (matches worker.py default)
@@ -65,7 +80,131 @@ FILE_TTL_HOURS = float(os.environ.get("FILE_TTL_HOURS", 24))
 ALLOWED_IMAGE_EXTS = {"jpg", "jpeg", "png", "webp"}
 ALLOWED_VIDEO_EXTS = {"mp4", "mov", "webm"}
 
-from typing import Optional
+logger = logging.getLogger(__name__)
+
+
+def _resolve_run_dir() -> Path:
+    """환경 변수 기반으로 최신 실험 경로를 찾는다."""
+
+    if VIT_RUN_DIR is not None:
+        run_dir = VIT_RUN_DIR.expanduser().resolve()
+        if not run_dir.is_dir():
+            raise FileNotFoundError(f"VIT_RUN_DIR 경로를 찾을 수 없습니다: {run_dir}")
+        return run_dir
+
+    root = VIT_RUN_ROOT.expanduser().resolve() if VIT_RUN_ROOT is not None else PROJECT_ROOT / "experiments" / "vit_residual_fusion"
+
+    if not root.is_dir():
+        raise FileNotFoundError(f"실험 루트 디렉토리를 찾을 수 없습니다: {root}")
+
+    candidates = sorted([path for path in root.iterdir() if path.is_dir()])
+    if not candidates:
+        raise FileNotFoundError(f"실험 루트에 실행 기록이 없습니다: {root}")
+
+    return candidates[-1]
+
+
+def _load_meta(run_dir: Path) -> dict[str, Any]:
+    meta_path = run_dir / "meta.yaml"
+    if not meta_path.is_file():
+        raise FileNotFoundError(f"meta.yaml을 찾을 수 없습니다: {meta_path}")
+    with meta_path.open("r", encoding="utf-8") as fp:
+        return yaml.safe_load(fp) or {}
+
+
+def _resolve_checkpoint(run_dir: Path) -> Path:
+    preferred = VIT_CHECKPOINT_NAME or "best.pt"
+    ckpt_path = run_dir / "checkpoints" / preferred
+    if ckpt_path.is_file():
+        return ckpt_path
+    fallback = run_dir / "checkpoints" / "last.pt"
+    if fallback.is_file():
+        logger.warning("선호한 체크포인트 %s 를 찾지 못해 last.pt를 사용합니다", ckpt_path.name)
+        return fallback
+    raise FileNotFoundError(f"체크포인트를 찾을 수 없습니다: {ckpt_path} 또는 {fallback}")
+
+
+def _resolve_real_index(class_names: Any) -> int:
+    if isinstance(class_names, (list, tuple)):
+        lowered = [str(name).lower() for name in class_names]
+        for candidate in ("nature", "real", "genuine"):
+            if candidate in lowered:
+                return lowered.index(candidate)
+        return 0
+    return 0
+
+
+def _build_transform(meta: dict[str, Any]):
+    dataset_cfg = meta.get("dataset", {})
+    config = load_dataset_config(dataset_cfg)
+    return build_val_transforms(config)
+
+
+def _load_torch_model(meta: dict[str, Any], checkpoint: Path, device: torch.device) -> torch.nn.Module:
+    model_cfg = meta.get("model") or {}
+    name = model_cfg.get("name")
+    if not name:
+        raise ValueError("meta.yaml에 model.name 항목이 없습니다.")
+    params = model_cfg.get("params") or {}
+    model = get_model(name, **params)
+
+    state = torch.load(checkpoint, map_location="cpu")
+    if isinstance(state, dict) and "model" in state:
+        state = state["model"]
+
+    if not isinstance(state, dict):
+        raise RuntimeError(f"지원되지 않는 체크포인트 형식입니다: {checkpoint}")
+
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing:
+        logger.warning("모델 로드시 누락된 파라미터: %s", missing)
+    if unexpected:
+        logger.warning("모델 로드시 예기치 않은 파라미터: %s", unexpected)
+
+    model.to(device)
+    model.eval()
+    return model
+
+
+def _initialize_vit_pipeline():
+    device_name = VIT_DEVICE_NAME
+    if device_name and device_name != "auto":
+        device = torch.device(device_name)
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    run_dir = _resolve_run_dir()
+    meta = _load_meta(run_dir)
+    transform = _build_transform(meta)
+    checkpoint = _resolve_checkpoint(run_dir)
+    model = _load_torch_model(meta, checkpoint, device)
+    model_cfg = meta.get("model") or {}
+    class_names = meta.get("dataset", {}).get("class_names")
+    if isinstance(class_names, tuple):
+        class_names = list(class_names)
+    elif not isinstance(class_names, list):
+        class_names = []
+    real_index = _resolve_real_index(class_names)
+
+    logger.info("VIT 추론 파이프라인 초기화 완료 - run=%s device=%s checkpoint=%s", run_dir, device, checkpoint.name)
+    return {
+        "model": model,
+        "transform": transform,
+        "device": device,
+        "class_names": class_names,
+        "real_index": real_index,
+        "run_dir": run_dir,
+        "model_name": model_cfg.get("name", "unknown"),
+    }
+
+
+try:
+    _vit_pipeline = _initialize_vit_pipeline()
+except Exception as exc:  # pragma: no cover - 초기화 실패 시 런타임에 노출
+    logger.error("VIT 추론 파이프라인 초기화 실패: %s", exc)
+    _vit_pipeline = {"error": exc}
+_vit_lock = asyncio.Lock()
+
 
 def _infer_kind(filename: str, content_type: Optional[str]) -> str:
     ct = (content_type or "").lower()
@@ -94,17 +233,24 @@ app.add_middleware(
 class Data(BaseModel):
     message: str
 
+def _predict_with_vit(image: Image.Image) -> list[float]:
+    if "error" in _vit_pipeline:
+        raise RuntimeError(f"모델 초기화 실패: {_vit_pipeline['error']}")
+
+    model: torch.nn.Module = _vit_pipeline["model"]
+    transform = _vit_pipeline["transform"]
+    device: torch.device = _vit_pipeline["device"]
+
+    image_rgb = image.convert("RGB")
+    tensor = transform(image_rgb).unsqueeze(0).to(device)
+    with torch.inference_mode():
+        logits = model(tensor)
+        probs = torch.softmax(logits, dim=1)
+    return probs.squeeze(0).detach().cpu().tolist()
+
+
 def predict_image(image: Image.Image):
-    model = tf_keras.models.load_model("../tvb-model/Xception")
-
-    img = image.resize((256, 256))  # 이미지 불러오기 및 크기 조정
-    img_array = img_to_array(img)  # numpy 배열 변환
-    img_array = np.expand_dims(img_array, axis=0)  # 배치 차원 추가 (1, 224, 224, 3)
-    img_array = img_array / 255.0  # 정규화 (모델 학습 시 정규화했다면 필요)
-
-
-    prediction = model.predict(img_array)
-    return prediction
+    return _predict_with_vit(image)
 
 @app.post("/predeict/video/")
 async def predict_video():
@@ -138,22 +284,35 @@ async def predict_video():
 async def upload_image(file: UploadFile = File(...)):
 
     image_data = await file.read()
-    image = Image.open(io.BytesIO(image_data))
+    try:
+        image = Image.open(io.BytesIO(image_data))
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid image file")
 
     start_time = time.time()
-    prediction = predict_image(image)
+    probabilities: list[float] = []
+    try:
+        async with _vit_lock:
+            probabilities = predict_image(image)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        image.close()
     end_time = time.time()
 
-    analyzeResult = JSONResponse(content=
-    {
-    "timestamp": datetime.now().timestamp(),
-    "used_model": "Xception",
-    "image_uuid" : file.filename,
-    "prediction_time": round(end_time - start_time, 2),
-    "predicted_probability": round(prediction[0].tolist()[0], 4),
-    "predicted_class": "Real" if prediction[0].tolist()[0]>0.5 else "Fake",
-})
-    return analyzeResult
+    real_index = int(_vit_pipeline.get("real_index", 0) or 0)
+    if real_index >= len(probabilities):
+        real_index = 0
+    prob_real = float(probabilities[real_index]) if probabilities else 0.0
+
+    return {
+        "timestamp": datetime.now().timestamp(),
+        "used_model": _vit_pipeline.get("model_name", "unknown"),
+        "image_uuid": file.filename,
+        "prediction_time": round(end_time - start_time, 2),
+        "predicted_probability": round(prob_real, 4),
+        "predicted_class": "Real" if prob_real > 0.5 else "Fake",
+    }
 
 
 # Generic media upload (image/video) → save to disk and return uploadId
