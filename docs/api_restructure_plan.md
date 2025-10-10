@@ -1,23 +1,21 @@
 # FastAPI 서버 리네이밍 및 디렉터리 분리 계획
 
 ## 1. tvb-server 디렉터리 리네이밍 제안
-- **추천 명칭:** `api_service`
+- **추천 명칭:** `api`
   - FastAPI 기반 API 서버만 담당하는 모듈임을 직관적으로 드러냅니다.
   - `core/`, `scripts/` 등과 동일한 level에서 백엔드 인퍼런스 서비스라는 책임을 명시할 수 있습니다.
-- **대체 후보:** `gravifox_api`
-  - 제품 브랜드와 FastAPI를 동시에 강조하고 싶을 때 사용할 수 있는 선택지입니다.
 
 > **권장 절차**
-> 1. `tvb-server` → `api_service` 디렉터리 리네이밍.
+> 1. `tvb-server` → `api` 디렉터리 리네이밍.
 > 2. `PYTHONPATH` 또는 모듈 import 경로(`from tvb-server...`)를 일괄 수정.
 > 3. `ENVIRONMENT.md`, 배포 스크립트, CI 설정 등에서 해당 경로 문자열을 찾아 업데이트.
-> 4. rename 이후 `uvicorn api_service.main:app` 형태로 엔트리포인트 정비.
+> 4. rename 이후 `uvicorn api.main:app` 형태로 엔트리포인트 정비.
 
 ## 2. FastAPI 서버 디렉터리 구조 개편안
 리네이밍 이후 다음과 같은 서브 디렉터리 구성을 권장합니다.
 
 ```
-api_service/
+api
 ├── main.py              # FastAPI 인스턴스 생성 및 라우팅 바인딩
 ├── config/              # 설정 스키마(pydantic BaseSettings)와 환경 분리
 │   ├── __init__.py
@@ -59,7 +57,7 @@ api_service/
 SCRFD 얼굴 감지 모듈은 ViT-B/16 기반 이미지 위조 판별 파이프라인에서 사용하지 않으므로 아래 순서로 정리합니다.
 
 1. **의존성 확인**
-   - `detection/` 모듈의 import 사용처를 전수 조사(`rg "detection" api_service` 등).
+   - `detection/` 모듈의 import 사용처를 전수 조사(`rg "detection" api` 등).
    - 실제 API 엔드포인트, 워커, 스크립트에서 SCRFD 관련 함수(`preprocess_scrfd`, `run_scrfd`, `decode_scrfd`) 호출 여부를 확인.
 2. **기능 대체 여부 검토**
    - ViT-B/16 추론에 필수적인 전처리/후처리와 충돌하거나 의존하지 않는지 확인.
