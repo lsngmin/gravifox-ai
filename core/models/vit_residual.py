@@ -48,7 +48,8 @@ class ViTResidualFusionModel(nn.Module):
         """이미지를 입력받아 2-클래스 로짓을 출력한다."""
 
         if image_tensor.ndim != 4 or image_tensor.shape[1] != 3:
-            logger.error("입력 텐서가 [B,3,H,W] 형식이 아닙니다: %s", image_tensor.shape)  # TODO: 필요 없을 시 삭제 가능
+            if not torch.jit.is_tracing() and not torch.jit.is_scripting():
+                logger.error("입력 텐서가 [B,3,H,W] 형식이 아닙니다: %s", image_tensor.shape)  # TODO: 필요 없을 시 삭제 가능
             raise ValueError("Expected image tensor of shape [B,3,H,W]")
 
         vit_features = self.vit.forward_features(image_tensor)
@@ -58,7 +59,11 @@ class ViTResidualFusionModel(nn.Module):
 
         residual_embedding = self.residual_branch(image_tensor)
 
-        if not self._shape_logged:
+        if (
+            not self._shape_logged
+            and not torch.jit.is_tracing()
+            and not torch.jit.is_scripting()
+        ):
             logger.debug(
                 "Fusion 텐서 크기 - vit=%s, residual=%s",
                 vit_embedding.shape,
