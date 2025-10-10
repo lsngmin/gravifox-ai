@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+MODEL_CATALOG_PATH: str = str((ROOT_DIR / "tvb-server" / "models" / "catalog.json").resolve())
 
 # ---- RabbitMQ / MQ settings ----
 # 로컬 AI 서버의 MQ로 전환 (포트 5000, TLS 미사용)
