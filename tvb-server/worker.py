@@ -143,6 +143,76 @@ def _serialize_preview(image: Image.Image) -> Optional[str]:
         return None
 
 
+def _to_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+    try:
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            return float(value.strip())
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def _build_mobile_payload(raw: Dict[str, Any], model: ModelInfo, latency_sec: Optional[float]) -> Dict[str, Any]:
+    prob_fake = _to_float(raw.get("prob_fake"))
+    if prob_fake is None:
+        timeline = raw.get("probs_timeline")
+        if isinstance(timeline, (list, tuple)) and timeline:
+            prob_fake = _to_float(timeline[-1], 0.0)
+    prob_fake = prob_fake if prob_fake is not None else 0.0
+
+    threshold = _to_float(raw.get("threshold"), model.threshold if isinstance(model.threshold, (int, float)) else 0.5)
+    threshold = threshold if threshold is not None else 0.5
+
+    high_conf = _to_float(raw.get("high_conf_ratio"), 0.0)
+    high_conf = high_conf if high_conf is not None else 0.0
+
+    label = raw.get("label")
+    if not label:
+        label = "FAKE" if prob_fake >= threshold else "REAL"
+    label = str(label).upper()
+
+    samples: List[Dict[str, Any]] = []
+    faces = raw.get("faces")
+    if isinstance(faces, dict):
+        original_samples = faces.get("samples")
+        if isinstance(original_samples, (list, tuple)):
+            for idx, item in enumerate(original_samples):
+                if not isinstance(item, dict):
+                    continue
+                img_b64 = item.get("image_jpg_base64")
+                if not img_b64:
+                    continue
+                try:
+                    sample_idx = int(item.get("idx", idx))
+                except (TypeError, ValueError):
+                    sample_idx = idx
+                samples.append({"idx": sample_idx, "image_jpg_base64": img_b64})
+                break  # 모바일 리포트는 첫 샘플만 사용
+
+    payload: Dict[str, Any] = {
+        "label": label,
+        "prob_fake": round(prob_fake, 4),
+        "threshold": round(threshold, 4),
+        "high_conf_ratio": round(high_conf, 4),
+        "faces": {"samples": samples},
+        "model": {
+            "key": model.key,
+            "name": model.name,
+            "version": model.version,
+            "type": model.type,
+        },
+    }
+
+    if latency_sec is not None:
+        payload["latency_sec"] = round(latency_sec, 2)
+
+    return payload
+
+
 def _analyze_torch_image(model: ModelInfo, media_path: Path, started_at: float) -> Dict[str, Any]:
     runner = _get_torch_runner(model)
     probs, preview = runner.predict(media_path)
@@ -275,11 +345,11 @@ async def run_analysis(mq: MQ, job_id: str, upload_id: str, params: Optional[Dic
             await asyncio.sleep(0.6)
             print(f"[WORKER] progress INFER 50% ({'image' if ext in IMAGE_EXTS else 'video'})")
             await publish_progress(mq, job_id, {"status": "RUNNING", "stage": "INFER", "progress": 50, "etaSec": 6, **model_meta})
-            result = run_media(
-                path=str(media_path),
-                det_sess=det_sess,
-                cls_sess=cls_sess,
-                conf_th=CONF,
+        result = run_media(
+            path=str(media_path),
+            det_sess=det_sess,
+            cls_sess=cls_sess,
+            conf_th=CONF,
                 sample_fps=FPS,
                 clip_len=CLIP_LEN,
                 clip_stride=CLIP_STRIDE,
@@ -297,16 +367,14 @@ async def run_analysis(mq: MQ, job_id: str, upload_id: str, params: Optional[Dic
             await asyncio.sleep(0.5)
 
         result = dict(result or {})
-        result.setdefault("model", model_meta["model"])
-        params_out = result.get("params")
-        if isinstance(params_out, dict):
-            params_out.setdefault("modelKey", model_info.key)
-        else:
-            result["params"] = {"modelKey": model_info.key}
+        latency = _to_float(result.get("latency_sec"))
+        if latency is None:
+            latency = time.time() - started_at
+        mobile_payload = _build_mobile_payload(result, model_info, latency)
 
         import json as _json
-        print(f"[WORKER] publish result jobId={job_id} json=\n{_json.dumps(result, ensure_ascii=False)}")
-        await publish_result(mq, job_id, result)
+        print(f"[WORKER] publish result jobId={job_id} json=\n{_json.dumps(mobile_payload, ensure_ascii=False)}")
+        await publish_result(mq, job_id, mobile_payload)
 
         try:
             media_path.unlink(missing_ok=True)
