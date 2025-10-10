@@ -18,6 +18,7 @@ from api.dependencies.inference import (
     get_storage_service,
     get_vit_service,
 )
+from api.workers.vit_worker import run_analysis
 from api.routes import explain, image, metrics, video
 
 LOGGER = get_logger("api.main")
@@ -31,6 +32,8 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=False,
 )
+
+_consumer_task: asyncio.Task | None = None
 
 
 @app.on_event("startup")
@@ -51,8 +54,24 @@ async def on_startup() -> None:
         try:
             await mq.connect()
             LOGGER.info("RabbitMQ 연결이 완료되었습니다")
+
+            async def _handle_request(payload: dict) -> None:
+                job_id = str(payload.get("jobId") or "").strip()
+                upload_id = str(payload.get("uploadId") or "").strip()
+                params = payload.get("params")
+                if not job_id or not upload_id:
+                    LOGGER.warning("잘못된 analyze.request payload: %s", payload)
+                    return
+                try:
+                    await run_analysis(mq, job_id, upload_id, params)
+                except Exception:  # pragma: no cover - 워커 예외 로깅
+                    LOGGER.exception("요청 처리 중 예외 발생 jobId=%s uploadId=%s", job_id, upload_id)
+
+            global _consumer_task
+            _consumer_task = asyncio.create_task(mq.consume_requests(_handle_request))
+            LOGGER.info("요청 큐 소비를 시작했습니다")
         except Exception as exc:  # pragma: no cover - 외부 서비스 의존
-            LOGGER.error("MQ 연결 실패: %s", exc)
+            LOGGER.error("MQ 초기화 실패: %s", exc)
 
 
 @app.on_event("shutdown")
@@ -62,6 +81,15 @@ async def on_shutdown() -> None:
     Returns:
         없음.
     """
+
+    # Stop the consumer loop first
+    global _consumer_task
+    if _consumer_task is not None:
+        try:
+            _consumer_task.cancel()
+        except Exception:
+            pass
+        _consumer_task = None
 
     mq = get_mq_service()
     try:
