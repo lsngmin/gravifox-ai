@@ -4,6 +4,7 @@
 - 추론 관련 설정은 모두 `tvb-ai/tvb-server/detection/gf1/config.py` 안의 상수로 관리합니다.
 - `.env.*` 파일이나 `TVB_ENV`, `TVB_ENV_FILE` 같은 환경변수 기반 주입 로직은 제거되었습니다.
 - 필요한 값을 변경하려면 해당 파일을 직접 수정하고, 서비스(uvicorn/worker)를 재시작하면 됩니다.
+- Torch 기반 MINTIME 추론 유틸리티(`mintime_*.py`)와 TensorFlow Xception 학습 스크립트(`tvb-model/`)는 더 이상 유지하지 않으므로 제거되었습니다.
 
 ### 핵심 설정 항목
 | 키 | 설명 |
