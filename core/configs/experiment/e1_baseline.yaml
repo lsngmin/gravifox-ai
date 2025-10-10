@@ -1,0 +1,32 @@
+# Fusion-tuned baseline (adjusted per 0.0-alpha training analysis)
+experiment_name: e1_baseline
+
+run:
+  seed: 1337
+  output_dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/${experiment_name}/${now:%Y%m%d_%H%M%S}
+
+optimizer:
+  name: adamw
+  lr: 5.0e-5
+  weight_decay: 0.05
+
+scheduler:
+  name: cosine
+  warmup_epochs: 3
+
+trainer:
+  epochs: 24
+  partial_epochs: 18
+  full_epochs: 6
+  partial_steps: 10000
+  full_steps: -1
+  grad_accum_steps: 2
+  mixed_precision: fp16
+  label_smoothing: 0.05
+  early_stopping:
+    enabled: true
+    patience: 5
+    monitor: val_loss
+    mode: min
+
+notes: "Fusion tuning baseline (2025-10 run metrics reflected)"
