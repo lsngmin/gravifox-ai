@@ -78,8 +78,16 @@ class ResidualBranchExtractor(nn.Module):
 
         residual = self.high_pass(image_tensor)
         features = self.cnn(residual)
-        if not self._shape_logged:
-            logger.debug("Residual 브랜치 텐서 크기 - residual=%s, features=%s", residual.shape, features.shape)
+        if (
+            not self._shape_logged
+            and not torch.jit.is_tracing()
+            and not torch.jit.is_scripting()
+        ):
+            logger.debug(
+                "Residual 브랜치 텐서 크기 - residual=%s, features=%s",
+                residual.shape,
+                features.shape,
+            )
             self._shape_logged = True
         flattened = features.flatten(1)
         embedding = self.proj(flattened)
