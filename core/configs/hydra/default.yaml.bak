@@ -1,0 +1,9 @@
+run:
+  dir: ${run.output_dir}
+
+sweep:
+  dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/sweeps/${experiment_name}
+  subdir: ${now:%Y%m%d_%H%M%S}_${hydra.job.num}
+
+job:
+  chdir: false
