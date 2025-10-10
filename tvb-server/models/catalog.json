@@ -3,8 +3,8 @@
   "items": [
     {
       "key": "vit_b16_default",
-      "name": "ViT-B/16 SNS Default",
-      "version": "2024-03",
+      "name": "Altair-0.0-alpha",
+      "version": "2025-03",
       "description": "Baseline ViT-B/16 classifier tuned for SNS imagery.",
       "type": "torch_image",
       "path": "vit_b16_default.pt",
