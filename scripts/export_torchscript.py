@@ -124,7 +124,7 @@ def main() -> None:
         if args.method == "script":
             scripted = torch.jit.script(model)
         else:
-            scripted = torch.jit.trace(model, dummy)
+            scripted = torch.jit.trace(model, dummy, check_trace=False)
     scripted.save(str(output_path))
     print(f"TorchScript model saved to {output_path}")
 
