@@ -17,7 +17,26 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
 
-from pydantic import BaseSettings, Field, validator
+# Pydantic v2 지원: pydantic-settings 사용. v1 환경에서는 이전 import로 폴백.
+try:  # Pydantic v2
+    from pydantic_settings import BaseSettings, SettingsConfigDict  # type: ignore
+    from pydantic import Field, field_validator  # type: ignore
+    _IS_PYDANTIC_V2 = True
+except Exception:  # Fallbacks for environments without pydantic-settings
+    try:
+        # Pydantic v2 installed but no pydantic-settings: use v1-compat namespace
+        from pydantic.v1 import BaseSettings, Field, validator  # type: ignore
+
+        SettingsConfigDict = None  # type: ignore
+        field_validator = None  # type: ignore
+        _IS_PYDANTIC_V2 = False
+    except Exception:
+        # True Pydantic v1 environment
+        from pydantic import BaseSettings, Field, validator  # type: ignore
+
+        SettingsConfigDict = None  # type: ignore
+        field_validator = None  # type: ignore
+        _IS_PYDANTIC_V2 = False
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -98,45 +117,89 @@ class RuntimeSettings(BaseSettings):
     request_queue: str = Field(default="analyze.request.fastapi", env="REQUEST_QUEUE")
     rabbitmq_prefetch: int = Field(default=10, env="RABBITMQ_PREFETCH")
 
-    class Config:
-        """pydantic 설정."""
+    # Pydantic v2에서는 SettingsConfigDict, v1에서는 class Config 사용
+    if _IS_PYDANTIC_V2:
+        model_config = SettingsConfigDict(  # type: ignore[call-arg]
+            env_file=".env", env_file_encoding="utf-8"
+        )
+    else:
+        class Config:  # type: ignore[no-redef]
+            """pydantic 설정."""
 
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+            env_file = ".env"
+            env_file_encoding = "utf-8"
 
-    @validator("cors_allow_origins", pre=True)
-    def _split_origins(cls, value: object) -> List[str]:
-        """콤마 구분 문자열을 리스트로 변환한다."""
+    if _IS_PYDANTIC_V2:
+        @field_validator("cors_allow_origins", mode="before")  # type: ignore[misc]
+        def _split_origins(cls, value: object) -> List[str]:
+            """콤마 구분 문자열을 리스트로 변환한다."""
 
-        if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
-        if isinstance(value, (list, tuple)):
-            return [str(origin).strip() for origin in value if str(origin).strip()]
-        return ["*"]
+            if isinstance(value, str):
+                return [origin.strip() for origin in value.split(",") if origin.strip()]
+            if isinstance(value, (list, tuple)):
+                return [str(origin).strip() for origin in value if str(origin).strip()]
+            return ["*"]
+    else:
+        @validator("cors_allow_origins", pre=True)  # type: ignore[misc]
+        def _split_origins(cls, value: object) -> List[str]:
+            """콤마 구분 문자열을 리스트로 변환한다."""
 
-    @validator("file_store_root", "vit_run_root", pre=True)
-    def _expand_paths(cls, value: object) -> Path:
-        """상대 경로를 절대 경로로 확장한다."""
+            if isinstance(value, str):
+                return [origin.strip() for origin in value.split(",") if origin.strip()]
+            if isinstance(value, (list, tuple)):
+                return [str(origin).strip() for origin in value if str(origin).strip()]
+            return ["*"]
 
-        if isinstance(value, Path):
-            return value.expanduser().resolve()
-        return Path(str(value)).expanduser().resolve()
+    if _IS_PYDANTIC_V2:
+        @field_validator("file_store_root", "vit_run_root", mode="before")  # type: ignore[misc]
+        def _expand_paths(cls, value: object) -> Path:
+            """상대 경로를 절대 경로로 확장한다."""
 
-    @validator("vit_run_dir", pre=True)
-    def _optional_path(cls, value: object) -> Optional[Path]:
-        """옵셔널 경로 값을 처리한다."""
+            if isinstance(value, Path):
+                return value.expanduser().resolve()
+            return Path(str(value)).expanduser().resolve()
+    else:
+        @validator("file_store_root", "vit_run_root", pre=True)  # type: ignore[misc]
+        def _expand_paths(cls, value: object) -> Path:
+            """상대 경로를 절대 경로로 확장한다."""
 
-        if value in (None, "", b""):
-            return None
-        return Path(str(value)).expanduser().resolve()
+            if isinstance(value, Path):
+                return value.expanduser().resolve()
+            return Path(str(value)).expanduser().resolve()
 
-    @validator("model_catalog_path", pre=True)
-    def _catalog_path(cls, value: object) -> Path:
-        """모델 카탈로그 경로를 절대 경로로 변환한다."""
+    if _IS_PYDANTIC_V2:
+        @field_validator("vit_run_dir", mode="before")  # type: ignore[misc]
+        def _optional_path(cls, value: object) -> Optional[Path]:
+            """옵셔널 경로 값을 처리한다."""
 
-        if isinstance(value, Path):
-            return value.expanduser().resolve()
-        return Path(str(value)).expanduser().resolve()
+            if value in (None, "", b""):
+                return None
+            return Path(str(value)).expanduser().resolve()
+    else:
+        @validator("vit_run_dir", pre=True)  # type: ignore[misc]
+        def _optional_path(cls, value: object) -> Optional[Path]:
+            """옵셔널 경로 값을 처리한다."""
+
+            if value in (None, "", b""):
+                return None
+            return Path(str(value)).expanduser().resolve()
+
+    if _IS_PYDANTIC_V2:
+        @field_validator("model_catalog_path", mode="before")  # type: ignore[misc]
+        def _catalog_path(cls, value: object) -> Path:
+            """모델 카탈로그 경로를 절대 경로로 변환한다."""
+
+            if isinstance(value, Path):
+                return value.expanduser().resolve()
+            return Path(str(value)).expanduser().resolve()
+    else:
+        @validator("model_catalog_path", pre=True)  # type: ignore[misc]
+        def _catalog_path(cls, value: object) -> Path:
+            """모델 카탈로그 경로를 절대 경로로 변환한다."""
+
+            if isinstance(value, Path):
+                return value.expanduser().resolve()
+            return Path(str(value)).expanduser().resolve()
 
 
 @lru_cache(maxsize=1)
