@@ -1,36 +1,34 @@
 seed: 1337
 
 model:
-  name: residual
-  num_classes: 2
+  name: vit_residual_fusion
   params:
-    in_channels: 3
-    embed_dim: 128
+    vit_name: vit_base_patch16_224
+    num_classes: 2
+    pretrained: true
+    residual_embed_dim: 160
 
 train:
   img_size: 224
   batch_size: 512  # per-process batch (A40 2장 → global 1024)
-  epochs: 40
+  epochs: 24
   optimizer:
     name: adamw
-    lr: 3.0e-4
+    lr: 5.0e-5
     weight_decay: 0.05
   scheduler:
-    name: reduce_on_plateau
-    monitor: val_loss
-    patience: 3
-    factor: 0.5
+    name: cosine
+    warmup_epochs: 3
     min_lr: 1.0e-6
-    mode: min
-    # warmup_epochs는 plateau에서는 사용하지 않음
   grad_accum_steps: 2  # 메모리 여유 없을 때 누적 그라드로 안정화
   mixed_precision: fp16
   log_interval: 50
   criterion: ce
+  label_smoothing: 0.05
   early_stopping:
     enabled: true
     monitor: val_loss
-    patience: 8
+    patience: 5
     mode: min
   checkpoint:
     save_best: true
