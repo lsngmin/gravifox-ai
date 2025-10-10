@@ -7,7 +7,7 @@
       "version": "2024-03",
       "description": "Baseline ViT-B/16 classifier tuned for SNS imagery.",
       "type": "torch_image",
-      "path": "models/vit_b16_default.pt",
+      "path": "vit_b16_default.pt",
       "threshold": 0.5,
       "input": "image",
       "labels": [
