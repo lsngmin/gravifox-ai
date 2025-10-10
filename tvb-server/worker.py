@@ -154,10 +154,23 @@ def _analyze_torch_image(model: ModelInfo, media_path: Path, started_at: float) 
     label = runner.labels[max_idx] if max_idx < len(runner.labels) else ("FAKE" if fake_prob >= threshold else "REAL")
     high_conf = float(1.0 if fake_prob >= threshold else 0.0)
     q50 = float(np.quantile(probs_arr, 0.5)) if probs_arr.size else fake_prob
+    q75 = float(np.quantile(probs_arr, 0.75)) if probs_arr.size else fake_prob
+    q90 = float(np.quantile(probs_arr, 0.9)) if probs_arr.size else fake_prob
+    q95 = float(np.quantile(probs_arr, 0.95)) if probs_arr.size else fake_prob
     pmax = float(np.max(probs_arr)) if probs_arr.size else fake_prob
     sample_b64 = _serialize_preview(preview)
     latency = time.time() - started_at
     mean_p = fake_prob
+    spectral_payload = {
+        "highfreq_ratio_mean": None,
+        "outlier_ratio": None,
+        "r0_ratio": model.extras.get("spectral_r0") if isinstance(model.extras, dict) else None,
+    }
+    stability_payload = {
+        "lm_jitter_rms": None,
+        "pose_delta_mean": None,
+        "pose_delta_outlier_ratio": None,
+    }
     result = {
         "ok": True,
         "variant": "torch_image",
@@ -181,13 +194,22 @@ def _analyze_torch_image(model: ModelInfo, media_path: Path, started_at: float) 
         "infer_cnt": 1,
         "frames_total": 1,
         "probs_timeline": [round(mean_p, 4)],
-        "quantiles": {"p50": round(q50, 4), "max": round(pmax, 4)},
+        "probs_ewma": None,
+        "quantiles": {
+            "p50": round(q50, 4),
+            "p75": round(q75, 4),
+            "p90": round(q90, 4),
+            "p95": round(q95, 4),
+            "max": round(pmax, 4),
+        },
         "exemplars": [{"idx": 0, "prob": round(mean_p, 4)}],
         "segments": [{"start": 0, "end": 0, "max": mean_p}] if mean_p >= threshold else [],
-        "stability": {},
-        "spectral": {},
+        "stability": stability_payload,
+        "spectral": spectral_payload,
         "faces": {
             "size_mean": None,
+            "size_min": None,
+            "size_max": None,
             "det_score_mean": None,
             "samples": ([{"idx": 0, "image_jpg_base64": sample_b64}] if sample_b64 else []),
         },
