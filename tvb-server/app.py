@@ -28,6 +28,7 @@ import os, uuid, datetime as dt, asyncio
 from typing import Any
 
 from settings import ENABLE_MQ, TVB_MAX_CONCURRENCY
+from model_registry import list_models, get_default_model
 from detection.gf1.config import (
     create_onnx_session,
     DET_ONNX_PATH,
@@ -196,6 +197,28 @@ async def upload_media(file: UploadFile = File(...), x_upload_token: Optional[st
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"upload failed: {e}")
+
+
+@app.get("/models")
+async def list_available_models():
+    catalog = list_models()
+    default_model = get_default_model()
+    return {
+        "defaultKey": default_model.key,
+        "items": [
+            {
+                "key": m.key,
+                "name": m.name,
+                "version": m.version,
+                "description": m.description,
+                "type": m.type,
+                "input": m.input,
+                "threshold": m.threshold,
+                "labels": list(m.labels),
+            }
+            for m in catalog
+        ],
+    }
 @app.get("/")
 async  def index():
     return {"received_message": "Hello World"}
