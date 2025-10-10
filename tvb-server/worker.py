@@ -8,11 +8,12 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 from PIL import Image
 
 from mq import MQ, publish_failed, publish_progress, publish_result
 from model_registry import ModelInfo, resolve_model
+import numpy as np
+from torchvision import transforms
 
 # Resolve upload dir (env, same default as FastAPI app)
 FILE_STORE_ROOT = Path(os.environ.get("FILE_STORE_ROOT", "/tmp/uploads"))
@@ -82,6 +83,13 @@ class TorchImageRunner:
             self.labels = ("REAL", "FAKE")
         labels_upper = [str(x).upper() for x in self.labels]
         self.fake_idx = labels_upper.index("FAKE") if "FAKE" in labels_upper else (1 if len(labels_upper) > 1 else 0)
+        resize_size = int(round(self.image_size * 1.12))
+        self.preprocess = transforms.Compose([
+            transforms.Resize(resize_size),
+            transforms.CenterCrop(self.image_size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean, std=std),
+        ])
 
     def _load_model(self, path: Path):
         # Expect TorchScript .pt; fall back to torch.load if needed.
@@ -98,12 +106,7 @@ class TorchImageRunner:
 
     def predict(self, media_path: Path) -> Tuple[List[float], Image.Image]:
         image = Image.open(media_path).convert("RGB")
-        if self.image_size:
-            image = image.resize((self.image_size, self.image_size))
-        arr = np.asarray(image, dtype="float32") / 255.0
-        arr = (arr - self.mean) / self.std
-        arr = np.transpose(arr, (2, 0, 1))  # CHW
-        tensor = self.torch.from_numpy(arr).unsqueeze(0).to(self.device)
+        tensor = self.preprocess(image).unsqueeze(0).to(self.device)
         with self.torch.no_grad():
             output = self.model(tensor)
             if isinstance(output, (list, tuple)):
