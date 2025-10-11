@@ -81,6 +81,8 @@ class RuntimeSettings(BaseSettings):
         default_factory=lambda: ["*"], env="CORS_ALLOW_ORIGINS"
     )
     upload_token: Optional[str] = Field(default=None, env="UPLOAD_TOKEN")
+    upload_token_disabled: bool = Field(default=False, env="UPLOAD_TOKEN_DISABLED")
+    upload_token_disabled_token: Optional[str] = Field(default=None, env="UPLOAD_TOKEN_DISABLED_TOKEN")
     upload_jwks_url: Optional[str] = Field(default=None, env="UPLOAD_JWKS_URL")
     upload_jwks_cache_seconds: int = Field(default=300, env="UPLOAD_JWKS_CACHE_SECONDS")
     upload_token_api_base: Optional[str] = Field(default=None, env="UPLOAD_TOKEN_API_BASE")

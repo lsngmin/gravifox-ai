@@ -99,31 +99,37 @@ async def upload_media(
         업로드 식별자 응답 모델.
     """
 
-    resolved_token = _resolve_upload_token(upload_token, authorization)
-    legacy_token = (settings.upload_token or "").strip()
-    if not resolved_token:
-        raise HTTPException(status_code=401, detail="upload token required")
-
     provided_upload_id = (upload_id or "").strip() or None
     registry_context = None
 
-    if legacy_token:
-        if resolved_token != legacy_token:
+    resolved_token = _resolve_upload_token(upload_token, authorization)
+    legacy_token = (settings.upload_token or "").strip()
+
+    if settings.upload_token_disabled:
+        expected = (settings.upload_token_disabled_token or legacy_token).strip()
+        if expected and resolved_token and resolved_token != expected:
             raise HTTPException(status_code=401, detail="invalid upload token")
+        resolved_token = resolved_token or expected or ""
     else:
-        claims = await verifier.verify(resolved_token)
-        if provided_upload_id and provided_upload_id != claims.upload_id:
-            raise HTTPException(status_code=409, detail="uploadId mismatch")
-        provided_upload_id = provided_upload_id or claims.upload_id
-        registry_context = await registry.authorize(resolved_token)
-        if (
-            registry_context is not None
-            and registry_context.upload_id != claims.upload_id
-        ):
-            await registry.complete_failure(
-                registry_context, "uploadId mismatch"
-            )
-            raise HTTPException(status_code=409, detail="upload token mismatch")
+        if not resolved_token:
+            raise HTTPException(status_code=401, detail="upload token required")
+        if legacy_token:
+            if resolved_token != legacy_token:
+                raise HTTPException(status_code=401, detail="invalid upload token")
+        else:
+            claims = await verifier.verify(resolved_token)
+            if provided_upload_id and provided_upload_id != claims.upload_id:
+                raise HTTPException(status_code=409, detail="uploadId mismatch")
+            provided_upload_id = provided_upload_id or claims.upload_id
+            registry_context = await registry.authorize(resolved_token)
+            if (
+                registry_context is not None
+                and registry_context.upload_id != claims.upload_id
+            ):
+                await registry.complete_failure(
+                    registry_context, "uploadId mismatch"
+                )
+                raise HTTPException(status_code=409, detail="upload token mismatch")
 
     kind = storage.infer_media_kind(
         file.filename or "", getattr(file, "content_type", None)
