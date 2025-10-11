@@ -10,6 +10,10 @@ from api.services.inference import VitInferenceService
 from api.services.mq import MQService
 from api.services.registry import ModelRegistryService
 from api.services.storage import MediaStorageService
+from api.services.upload_token import (
+    UploadTokenRegistryClient,
+    UploadTokenVerifier,
+)
 
 
 @lru_cache(maxsize=1)
@@ -97,6 +101,32 @@ def get_storage_service() -> MediaStorageService:
 
 
 @lru_cache(maxsize=1)
+def _upload_token_verifier_singleton() -> UploadTokenVerifier:
+    """업로드 토큰 검증기 싱글톤."""
+
+    return UploadTokenVerifier(get_runtime_settings())
+
+
+def get_upload_token_verifier() -> UploadTokenVerifier:
+    """FastAPI 라우트용 업로드 토큰 검증기."""
+
+    return _upload_token_verifier_singleton()
+
+
+@lru_cache(maxsize=1)
+def _upload_token_registry_singleton() -> UploadTokenRegistryClient:
+    """Spring UploadToken 서비스 클라이언트 싱글톤."""
+
+    return UploadTokenRegistryClient(get_runtime_settings())
+
+
+def get_upload_token_registry() -> UploadTokenRegistryClient:
+    """FastAPI 라우트용 업로드 토큰 상태 보고 클라이언트."""
+
+    return _upload_token_registry_singleton()
+
+
+@lru_cache(maxsize=1)
 def _registry_service_singleton() -> ModelRegistryService:
     """모델 카탈로그 서비스 싱글톤.
 
@@ -145,4 +175,6 @@ __all__ = [
     "get_model_registry",
     "get_mq_service",
     "get_calibrator",
+    "get_upload_token_verifier",
+    "get_upload_token_registry",
 ]

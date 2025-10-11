@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import re
 import uuid
 from enum import Enum
 from pathlib import Path
@@ -61,7 +62,9 @@ class MediaStorageService:
             return MediaKind.VIDEO
         raise HTTPException(status_code=415, detail="unsupported media type")
 
-    async def save_upload(self, file: UploadFile, kind: MediaKind) -> str:
+    async def save_upload(
+        self, file: UploadFile, kind: MediaKind, upload_id: Optional[str] = None
+    ) -> str:
         """업로드 파일을 저장하고 식별자를 반환한다.
 
         Args:
@@ -81,10 +84,8 @@ class MediaStorageService:
             * 1024
             * 1024
         )
-        now = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%S")
-        suffix = Path(file.filename or "media").suffix.lower()
-        upload_id = f"{now}_{uuid.uuid4().hex}{suffix}"
-        destination = self._root / upload_id
+        candidate = self._resolve_upload_id(upload_id, file)
+        destination = self._root / candidate
         written = 0
         try:
             with destination.open("wb") as fp:
@@ -104,7 +105,24 @@ class MediaStorageService:
             destination.unlink(missing_ok=True)
             self._logger.error("파일 저장 실패: %s", exc)
             raise HTTPException(status_code=500, detail="upload failed") from exc
-        return upload_id
+        return candidate
+
+    def _resolve_upload_id(self, upload_id: Optional[str], file: UploadFile) -> str:
+        suffix = Path(file.filename or "media").suffix.lower()
+        if upload_id:
+            candidate = upload_id.strip()
+            if not candidate:
+                raise HTTPException(status_code=400, detail="uploadId required")
+            if re.search(r"[\\/]|\.\.", candidate):
+                raise HTTPException(status_code=400, detail="invalid uploadId")
+            if len(candidate) > 160:
+                raise HTTPException(status_code=400, detail="uploadId too long")
+            if "." not in Path(candidate).name and suffix:
+                candidate = f"{candidate}{suffix}"
+            return candidate
+        now = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+        base = f"{now}_{uuid.uuid4().hex}"
+        return f"{base}{suffix}"
 
     async def cleanup_expired(self) -> None:
         """TTL을 초과한 파일을 삭제한다.

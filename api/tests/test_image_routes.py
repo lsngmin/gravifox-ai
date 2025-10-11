@@ -15,6 +15,8 @@ from api.dependencies.inference import (
     get_model_registry,
     get_runtime_settings,
     get_storage_service,
+    get_upload_token_registry,
+    get_upload_token_verifier,
     get_vit_service,
 )
 
@@ -69,9 +71,9 @@ class _FakeStorage:
     def infer_media_kind(self, filename: str, content_type: Optional[str]):
         return "image"
 
-    async def save_upload(self, file, kind):
+    async def save_upload(self, file, kind, upload_id=None):
         await file.read()
-        return "test-upload-id"
+        return upload_id or "test-upload-id"
 
 
 class _FakeRegistry:
@@ -125,7 +127,11 @@ class _FakeSettings:
     """테스트용 설정."""
 
     cors_allow_origins = ["*"]
-    upload_token: Optional[str] = None
+    upload_token: Optional[str] = "test-token"
+    upload_jwks_url: Optional[str] = None
+    upload_jwks_cache_seconds: int = 300
+    upload_token_api_base: Optional[str] = None
+    upload_token_service_key: Optional[str] = None
     file_store_root = ""
     max_image_mb = 5
     max_video_mb = 50
@@ -140,6 +146,22 @@ class _FakeSettings:
     uncertainty_band_high = 0.55
 
 
+class _FakeUploadTokenVerifier:
+    async def verify(self, token):
+        raise AssertionError("verify should not be called when legacy token is configured")
+
+
+class _FakeUploadTokenRegistry:
+    async def authorize(self, token):
+        return None
+
+    async def complete_success(self, context):
+        return None
+
+    async def complete_failure(self, context, reason=None):
+        return None
+
+
 @pytest.fixture(autouse=True)
 def _override_dependencies():
     """FastAPI 의존성을 가짜 구현으로 오버라이드한다."""
@@ -149,6 +171,12 @@ def _override_dependencies():
     fastapi_app.dependency_overrides[get_model_registry] = lambda: _FakeRegistry()
     fastapi_app.dependency_overrides[get_runtime_settings] = lambda: _FakeSettings()
     fastapi_app.dependency_overrides[get_calibrator] = lambda: _FakeCalibrator()
+    fastapi_app.dependency_overrides[
+        get_upload_token_verifier
+    ] = lambda: _FakeUploadTokenVerifier()
+    fastapi_app.dependency_overrides[
+        get_upload_token_registry
+    ] = lambda: _FakeUploadTokenRegistry()
     yield
     fastapi_app.dependency_overrides.clear()
 
@@ -182,7 +210,9 @@ def test_upload_media() -> None:
 
     client = TestClient(fastapi_app)
     response = client.post(
-        "/upload", files={"file": ("test.png", _make_test_image(), "image/png")}
+        "/upload",
+        files={"file": ("test.png", _make_test_image(), "image/png")},
+        headers={"Upload-Token": "test-token"},
     )
     assert response.status_code == 200
     assert response.json() == {"uploadId": "test-upload-id"}

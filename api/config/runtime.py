@@ -81,6 +81,10 @@ class RuntimeSettings(BaseSettings):
         default_factory=lambda: ["*"], env="CORS_ALLOW_ORIGINS"
     )
     upload_token: Optional[str] = Field(default=None, env="UPLOAD_TOKEN")
+    upload_jwks_url: Optional[str] = Field(default=None, env="UPLOAD_JWKS_URL")
+    upload_jwks_cache_seconds: int = Field(default=300, env="UPLOAD_JWKS_CACHE_SECONDS")
+    upload_token_api_base: Optional[str] = Field(default=None, env="UPLOAD_TOKEN_API_BASE")
+    upload_token_service_key: Optional[str] = Field(default=None, env="UPLOAD_TOKEN_SERVICE_KEY")
     file_store_root: Path = Field(default=Path("/tmp/uploads"), env="FILE_STORE_ROOT")
     max_image_mb: float = Field(default=5.0, env="MAX_IMAGE_MB")
     max_video_mb: float = Field(default=50.0, env="MAX_VIDEO_MB")

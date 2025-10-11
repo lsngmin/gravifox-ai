@@ -17,7 +17,11 @@ uvicorn api.main:app --reload
 | `MAX_IMAGE_MB` | `5` | 이미지 업로드 최대 크기(MB) |
 | `MAX_VIDEO_MB` | `50` | 비디오 업로드 최대 크기(MB) |
 | `FILE_TTL_HOURS` | `24` | 업로드 파일 TTL(시간) |
-| `UPLOAD_TOKEN` | 없음 | `X-Upload-Token` 헤더로 전달할 토큰 |
+| `UPLOAD_TOKEN` | 없음 | 레거시 정적 업로드 토큰(설정 시 RS256 검증 비활성) |
+| `UPLOAD_JWKS_URL` | 없음 | Spring `/api/.well-known/jwks.json` 엔드포인트 URL |
+| `UPLOAD_JWKS_CACHE_SECONDS` | `300` | JWKS 캐시 갱신 주기(초) |
+| `UPLOAD_TOKEN_API_BASE` | 없음 | Spring 업로드 토큰 API 베이스 URL (예: `https://api.example.com/api/v1/files/upload-token`) |
+| `UPLOAD_TOKEN_SERVICE_KEY` | 없음 | Spring 업로드 토큰 API 호출 시 사용할 `X-Service-Key` 값 |
 | `CORS_ALLOW_ORIGINS` | `*` | CORS 허용 origin 목록(콤마 구분) |
 | `TVB_VIT_RUN_ROOT` | `<repo>/experiments/vit_residual_fusion` | 최신 ViT 실험 루트 |
 | `TVB_VIT_RUN_DIR` | 자동 | 특정 실험 디렉터리를 강제로 지정 |
@@ -34,7 +38,12 @@ uvicorn api.main:app --reload
 `.env` 예시:
 ```env
 FILE_STORE_ROOT=/var/lib/tvb/uploads
-UPLOAD_TOKEN=sample-token
+# 레거시 정적 토큰을 사용할 경우에만 설정
+# UPLOAD_TOKEN=sample-token
+# RS256 업로드 토큰 흐름에 필요한 설정
+UPLOAD_JWKS_URL=https://api.example.com/api/.well-known/jwks.json
+UPLOAD_TOKEN_API_BASE=https://api.example.com/api/v1/files/upload-token
+UPLOAD_TOKEN_SERVICE_KEY=internal-secret
 TVB_VIT_RUN_ROOT=/mnt/experiments/vit_residual_fusion
 TVB_VIT_DEVICE=cuda:0
 RABBITMQ_URL=amqps://user:pass@mq.internal:5671/
