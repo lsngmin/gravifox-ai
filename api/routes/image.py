@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import time
 from typing import Optional
 
@@ -32,6 +33,7 @@ from api.services.storage import MediaStorageService
 from api.services.upload_token import UploadTokenRegistryClient, UploadTokenVerifier
 
 router = APIRouter()
+logger = logging.getLogger("tvb.upload")
 
 
 @router.post("/predict/image", response_model=ImagePredictionResponse)
@@ -101,24 +103,58 @@ async def upload_media(
 
     provided_upload_id = (upload_id or "").strip() or None
     registry_context = None
+    logger.info(
+        "[UploadPipeline] request filename=%s uploadId=%s contentType=%s",
+        file.filename,
+        provided_upload_id or "<none>",
+        getattr(file, "content_type", None),
+    )
 
     resolved_token = _resolve_upload_token(upload_token, authorization)
     legacy_token = (settings.upload_token or "").strip()
+    logger.info(
+        "[UploadPipeline] tokens header=%s authorization=%s resolved=%s",
+        _mask_token(upload_token),
+        _mask_bearer(authorization),
+        _mask_token(resolved_token),
+    )
 
     if settings.upload_token_disabled:
         expected = (settings.upload_token_disabled_token or legacy_token).strip()
         if expected and resolved_token and resolved_token != expected:
+            logger.warning(
+                "[UploadPipeline] disabled-mode token mismatch expected=%s actual=%s",
+                _mask_token(expected),
+                _mask_token(resolved_token),
+            )
             raise HTTPException(status_code=401, detail="invalid upload token")
         resolved_token = resolved_token or expected or ""
     else:
         if not resolved_token:
+            logger.warning("[UploadPipeline] upload token missing")
             raise HTTPException(status_code=401, detail="upload token required")
         if legacy_token:
             if resolved_token != legacy_token:
+                logger.warning(
+                    "[UploadPipeline] legacy token mismatch expected=%s actual=%s",
+                    _mask_token(legacy_token),
+                    _mask_token(resolved_token),
+                )
                 raise HTTPException(status_code=401, detail="invalid upload token")
         else:
             claims = await verifier.verify(resolved_token)
+            logger.info(
+                "[UploadPipeline] verified upload token uploadId=%s jti=%s exp=%s",
+                claims.upload_id,
+                claims.jti,
+                claims.expires_at.isoformat(),
+            )
             if provided_upload_id and provided_upload_id != claims.upload_id:
+                logger.warning(
+                    "[UploadPipeline] uploadId mismatch provided=%s claims=%s",
+                    provided_upload_id,
+                    claims.upload_id,
+                )
                 raise HTTPException(status_code=409, detail="uploadId mismatch")
             provided_upload_id = provided_upload_id or claims.upload_id
             registry_context = await registry.authorize(resolved_token)
@@ -126,10 +162,22 @@ async def upload_media(
                 registry_context is not None
                 and registry_context.upload_id != claims.upload_id
             ):
+                logger.warning(
+                    "[UploadPipeline] registry mismatch uploadId=%s registry=%s",
+                    claims.upload_id,
+                    registry_context.upload_id,
+                )
                 await registry.complete_failure(
                     registry_context, "uploadId mismatch"
                 )
                 raise HTTPException(status_code=409, detail="upload token mismatch")
+            if registry_context is not None:
+                logger.info(
+                    "[UploadPipeline] registry authorized tokenId=%s uploadId=%s jti=%s",
+                    registry_context.token_id,
+                    registry_context.upload_id,
+                    registry_context.jti,
+                )
 
     kind = storage.infer_media_kind(
         file.filename or "", getattr(file, "content_type", None)
@@ -139,13 +187,24 @@ async def upload_media(
             file, kind, upload_id=provided_upload_id
         )
     except HTTPException as exc:
+        logger.exception(
+            "[UploadPipeline] upload rejected uploadId=%s reason=%s",
+            provided_upload_id,
+            getattr(exc, "detail", None),
+        )
         await registry.complete_failure(registry_context, str(exc.detail))
         raise
     except Exception as exc:  # pragma: no cover - 파일 시스템 예외 대비
+        logger.exception(
+            "[UploadPipeline] upload failed uploadId=%s", provided_upload_id
+        )
         await registry.complete_failure(registry_context, "upload failed")
         raise
 
     await registry.complete_success(registry_context)
+    logger.info(
+        "[UploadPipeline] upload stored uploadId=%s kind=%s", saved_upload_id, kind
+    )
     return UploadResponse(uploadId=saved_upload_id)
 
 
@@ -195,3 +254,23 @@ def _resolve_upload_token(
             if token:
                 return token
     return None
+
+
+def _mask_token(token: Optional[str]) -> str:
+    if not token:
+        return "null"
+    trimmed = token.strip()
+    if len(trimmed) <= 8:
+        return f"{trimmed[0]}***"
+    return f"{trimmed[:4]}…{trimmed[-4:]}"
+
+
+def _mask_bearer(header: Optional[str]) -> str:
+    if not header:
+        return "null"
+    value = header.strip()
+    if not value:
+        return "null"
+    if value.lower().startswith("bearer "):
+        return f"Bearer {_mask_token(value[7:])}"
+    return value[:10] + "…"
