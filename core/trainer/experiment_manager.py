@@ -111,13 +111,39 @@ class ExperimentManager:
         if not self.is_main_process:
             return False
         key = self.monitor.key
-        if key not in metrics:
+        value = metrics.get(key)
+        alias_key: Optional[str] = None
+        if value is None:
+            if key.startswith("val_"):
+                alt = key[len("val_") :]
+                if alt in metrics:
+                    alias_key = alt
+                    value = metrics[alt]
+            else:
+                prefixed = f"val_{key}"
+                if prefixed in metrics:
+                    alias_key = prefixed
+                    value = metrics[prefixed]
+        if value is None:
             return False
-        current = float(metrics[key])
+        try:
+            current = float(value)
+        except (TypeError, ValueError):
+            return False
+        record_metrics: Dict[str, Any] = dict(metrics)
+        if key not in record_metrics:
+            record_metrics[key] = value
+        if alias_key and alias_key not in record_metrics:
+            record_metrics[alias_key] = metrics.get(alias_key, value)
         if self.monitor.is_improved(current, self.best_value):
             self.best_value = current
             with open(self.summary_file, "w", encoding="utf-8") as fp:
-                json.dump({"best": current, "monitor": key, "mode": self.monitor.mode, "metrics": metrics}, fp, ensure_ascii=False, indent=2)
+                json.dump(
+                    {"best": current, "monitor": key, "mode": self.monitor.mode, "metrics": record_metrics},
+                    fp,
+                    ensure_ascii=False,
+                    indent=2,
+                )
             return True
         return False
 

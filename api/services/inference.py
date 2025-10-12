@@ -108,8 +108,8 @@ class VitInferenceService:
             else:
                 metadata["mode"] = "multi"
                 metadata["patch_count"] = len(patch_tensors)
-                self._logger.debug(
-                    "멀티패치 추론 실행 - patches=%d scales=%s aggregate=%s",
+                self._logger.info(
+                    "멀티패치 추론 시작 - patches=%d scales=%s aggregate=%s",
                     len(patch_tensors),
                     list(pipeline.inference_scales),
                     pipeline.inference_aggregate,
@@ -119,6 +119,16 @@ class VitInferenceService:
                 ]
                 patch_distributions = await asyncio.gather(*patch_futures)
                 aggregated = self._aggregate_patch_probs(patch_distributions, pipeline)
+                real_idx = pipeline.real_index if pipeline.real_index < len(aggregated) else 0
+                ai_idx = 1 if real_idx == 0 else 0
+                real_score = float(aggregated[real_idx]) if 0 <= real_idx < len(aggregated) else float("nan")
+                ai_score = float(aggregated[ai_idx]) if 0 <= ai_idx < len(aggregated) else float("nan")
+                self._logger.info(
+                    "멀티패치 추론 완료 - patches=%d real=%.4f ai=%.4f",
+                    len(patch_tensors),
+                    real_score,
+                    ai_score,
+                )
                 return aggregated, metadata
 
         tensor = self._prepare_tensor(rgb_image, pipeline)
