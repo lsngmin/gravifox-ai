@@ -109,8 +109,13 @@ async def run_analysis(
             float(calibration.p_ai),
             latency_ms,
         )
-
+        LOGGER.info(
+            "결과 이벤트 발행 준비 - jobId=%s routing_key=analyze.result.%s",
+            job_id,
+            job_id,
+        )
         await publish_result(mq, job_id, result_payload)
+        LOGGER.info("결과 이벤트 발행 완료 - jobId=%s", job_id)
     except Exception as exc:  # pragma: no cover - 예외 상황 로깅
         LOGGER.exception("워커 분석 중 오류 발생")
         await publish_failed(
