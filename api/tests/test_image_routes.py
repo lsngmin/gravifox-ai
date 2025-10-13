@@ -144,6 +144,7 @@ class _FakeSettings:
     calibration_temperature = 1.0
     uncertainty_band_low = 0.45
     uncertainty_band_high = 0.55
+    result_publish_grace_seconds = 0.0
 
 
 class _FakeUploadTokenVerifier:

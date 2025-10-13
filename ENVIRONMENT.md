@@ -36,6 +36,7 @@ uvicorn api.main:app --reload
 | `RABBITMQ_PREFETCH` | `10` | MQ prefetch 설정 |
 | `ANALYZE_EXCHANGE` | `analyze.exchange` | MQ 교환기 |
 | `REQUEST_QUEUE` | `analyze.request.fastapi` | MQ 요청 큐 |
+| `RESULT_PUBLISH_GRACE_SECONDS` | `2.0` | 결과 이벤트 발행 후 워커가 종료되기 전 대기 시간(초) |
 
 `.env` 예시:
 ```env
@@ -53,6 +54,8 @@ TVB_VIT_RUN_ROOT=/mnt/experiments/vit_residual_fusion
 TVB_VIT_DEVICE=cuda:0
 RABBITMQ_URL=amqps://user:pass@mq.internal:5671/
 RABBITMQ_USE_TLS=true
+# 결과 발행 후 FastAPI가 SSE를 마무리할 수 있도록 유예 시간을 둬요
+RESULT_PUBLISH_GRACE_SECONDS=2
 ```
 
 ## MQ & 워커 연동
@@ -60,6 +63,7 @@ RABBITMQ_USE_TLS=true
 - 백그라운드 워커는 `api/workers/vit_worker.py`에서 ViT 추론을 수행해요.
 - MQ 소비 루프는 `python -m api.workers.runner`로 실행하면 돼요.
 - `ENABLE_MQ`가 `true`이고 `RABBITMQ_URL`이 설정된 경우 FastAPI 시작 시 MQ 연결을 시도해요.
+- 워커는 `RESULT_PUBLISH_GRACE_SECONDS` 동안 결과 발행 후 대기하여 Spring SSE가 응답을 마무리할 시간을 확보해요.
 - 워커 실행 예시는 아래와 같아요.
 
 ```bash

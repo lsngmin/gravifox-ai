@@ -125,7 +125,15 @@ async def run_analysis(
                 job_id,
                 grace_seconds,
             )
-            await asyncio.sleep(grace_seconds)
+            try:
+                await asyncio.sleep(grace_seconds)
+            except asyncio.CancelledError:
+                LOGGER.warning(
+                    "결과 발행 후 유예 대기 중 취소 감지 - jobId=%s delay=%.2fs",
+                    job_id,
+                    grace_seconds,
+                )
+                raise
     except Exception as exc:  # pragma: no cover - 예외 상황 로깅
         LOGGER.exception("워커 분석 중 오류 발생")
         await publish_failed(
