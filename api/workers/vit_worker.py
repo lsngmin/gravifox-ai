@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -116,6 +117,15 @@ async def run_analysis(
         )
         await publish_result(mq, job_id, result_payload)
         LOGGER.info("결과 이벤트 발행 완료 - jobId=%s", job_id)
+
+        grace_seconds = max(0.0, float(settings_obj.result_publish_grace_seconds))
+        if grace_seconds > 0:
+            LOGGER.debug(
+                "결과 발행 후 SSE 플러시 유예 시간 대기 - jobId=%s delay=%.2fs",
+                job_id,
+                grace_seconds,
+            )
+            await asyncio.sleep(grace_seconds)
     except Exception as exc:  # pragma: no cover - 예외 상황 로깅
         LOGGER.exception("워커 분석 중 오류 발생")
         await publish_failed(
