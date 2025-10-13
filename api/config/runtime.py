@@ -21,6 +21,7 @@ from typing import List, Optional
 try:  # Pydantic v2
     from pydantic_settings import BaseSettings, SettingsConfigDict  # type: ignore
     from pydantic import Field, field_validator  # type: ignore
+
     _IS_PYDANTIC_V2 = True
 except Exception:  # Fallbacks for environments without pydantic-settings
     try:
@@ -75,6 +76,7 @@ class RuntimeSettings(BaseSettings):
         analyze_exchange: 분석 요청/결과 교환기 이름.
         request_queue: 분석 요청 큐 이름.
         rabbitmq_prefetch: MQ prefetch 개수.
+        result_publish_grace_seconds: MQ 결과 발행 직후 대기 시간(초).
     """
 
     cors_allow_origins: List[str] = Field(
@@ -82,11 +84,17 @@ class RuntimeSettings(BaseSettings):
     )
     upload_token: Optional[str] = Field(default=None, env="UPLOAD_TOKEN")
     upload_token_disabled: bool = Field(default=False, env="UPLOAD_TOKEN_DISABLED")
-    upload_token_disabled_token: Optional[str] = Field(default=None, env="UPLOAD_TOKEN_DISABLED_TOKEN")
+    upload_token_disabled_token: Optional[str] = Field(
+        default=None, env="UPLOAD_TOKEN_DISABLED_TOKEN"
+    )
     upload_jwks_url: Optional[str] = Field(default=None, env="UPLOAD_JWKS_URL")
     upload_jwks_cache_seconds: int = Field(default=300, env="UPLOAD_JWKS_CACHE_SECONDS")
-    upload_token_api_base: Optional[str] = Field(default=None, env="UPLOAD_TOKEN_API_BASE")
-    upload_token_service_key: Optional[str] = Field(default=None, env="UPLOAD_TOKEN_SERVICE_KEY")
+    upload_token_api_base: Optional[str] = Field(
+        default=None, env="UPLOAD_TOKEN_API_BASE"
+    )
+    upload_token_service_key: Optional[str] = Field(
+        default=None, env="UPLOAD_TOKEN_SERVICE_KEY"
+    )
     file_store_root: Path = Field(default=Path("/tmp/uploads"), env="FILE_STORE_ROOT")
     max_image_mb: float = Field(default=5.0, env="MAX_IMAGE_MB")
     max_video_mb: float = Field(default=50.0, env="MAX_VIDEO_MB")
@@ -123,6 +131,9 @@ class RuntimeSettings(BaseSettings):
     analyze_exchange: str = Field(default="analyze.exchange", env="ANALYZE_EXCHANGE")
     request_queue: str = Field(default="analyze.request.fastapi", env="REQUEST_QUEUE")
     rabbitmq_prefetch: int = Field(default=10, env="RABBITMQ_PREFETCH")
+    result_publish_grace_seconds: float = Field(
+        default=2.0, env="RESULT_PUBLISH_GRACE_SECONDS"
+    )
 
     # Pydantic v2에서는 SettingsConfigDict, v1에서는 class Config 사용
     if _IS_PYDANTIC_V2:
@@ -130,6 +141,7 @@ class RuntimeSettings(BaseSettings):
             env_file=".env", env_file_encoding="utf-8"
         )
     else:
+
         class Config:  # type: ignore[no-redef]
             """pydantic 설정."""
 
@@ -137,6 +149,7 @@ class RuntimeSettings(BaseSettings):
             env_file_encoding = "utf-8"
 
     if _IS_PYDANTIC_V2:
+
         @field_validator("cors_allow_origins", mode="before")  # type: ignore[misc]
         def _split_origins(cls, value: object) -> List[str]:
             """콤마 구분 문자열을 리스트로 변환한다."""
@@ -146,7 +159,9 @@ class RuntimeSettings(BaseSettings):
             if isinstance(value, (list, tuple)):
                 return [str(origin).strip() for origin in value if str(origin).strip()]
             return ["*"]
+
     else:
+
         @validator("cors_allow_origins", pre=True)  # type: ignore[misc]
         def _split_origins(cls, value: object) -> List[str]:
             """콤마 구분 문자열을 리스트로 변환한다."""
@@ -158,6 +173,7 @@ class RuntimeSettings(BaseSettings):
             return ["*"]
 
     if _IS_PYDANTIC_V2:
+
         @field_validator("file_store_root", "vit_run_root", mode="before")  # type: ignore[misc]
         def _expand_paths(cls, value: object) -> Path:
             """상대 경로를 절대 경로로 확장한다."""
@@ -165,7 +181,9 @@ class RuntimeSettings(BaseSettings):
             if isinstance(value, Path):
                 return value.expanduser().resolve()
             return Path(str(value)).expanduser().resolve()
+
     else:
+
         @validator("file_store_root", "vit_run_root", pre=True)  # type: ignore[misc]
         def _expand_paths(cls, value: object) -> Path:
             """상대 경로를 절대 경로로 확장한다."""
@@ -175,6 +193,7 @@ class RuntimeSettings(BaseSettings):
             return Path(str(value)).expanduser().resolve()
 
     if _IS_PYDANTIC_V2:
+
         @field_validator("vit_run_dir", mode="before")  # type: ignore[misc]
         def _optional_path(cls, value: object) -> Optional[Path]:
             """옵셔널 경로 값을 처리한다."""
@@ -182,7 +201,9 @@ class RuntimeSettings(BaseSettings):
             if value in (None, "", b""):
                 return None
             return Path(str(value)).expanduser().resolve()
+
     else:
+
         @validator("vit_run_dir", pre=True)  # type: ignore[misc]
         def _optional_path(cls, value: object) -> Optional[Path]:
             """옵셔널 경로 값을 처리한다."""
@@ -192,6 +213,7 @@ class RuntimeSettings(BaseSettings):
             return Path(str(value)).expanduser().resolve()
 
     if _IS_PYDANTIC_V2:
+
         @field_validator("model_catalog_path", mode="before")  # type: ignore[misc]
         def _catalog_path(cls, value: object) -> Path:
             """모델 카탈로그 경로를 절대 경로로 변환한다."""
@@ -199,7 +221,9 @@ class RuntimeSettings(BaseSettings):
             if isinstance(value, Path):
                 return value.expanduser().resolve()
             return Path(str(value)).expanduser().resolve()
+
     else:
+
         @validator("model_catalog_path", pre=True)  # type: ignore[misc]
         def _catalog_path(cls, value: object) -> Path:
             """모델 카탈로그 경로를 절대 경로로 변환한다."""
