@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from PIL import Image
 
@@ -77,6 +77,13 @@ async def run_analysis(
         label = label_map.get(decision, decision.upper())
         threshold_fake = float(1.0 - settings_obj.uncertainty_band_low)
 
+        heatmap_meta = (
+            inference_meta.get("heatmap")
+            if isinstance(inference_meta, dict)
+            else None
+        )
+        heatmap_score = _resolve_heatmap_score(heatmap_meta)
+
         result_payload = {
             "modelVersion": pipeline.model_name,
             "classNames": pipeline.class_names,
@@ -98,10 +105,15 @@ async def run_analysis(
                 "aggregate": inference_meta.get("aggregate"),
                 "latencyMs": latency_ms,
                 "device": str(pipeline.device),
+                "grid": inference_meta.get("grid"),
+                "heatmap": heatmap_meta,
+                "patches": inference_meta.get("patches"),
             },
             "params": params or {},
             "model": model or {},
         }
+        if heatmap_score is not None:
+            result_payload["heatmap_score"] = heatmap_score
 
         LOGGER.info(
             "워커 추론 완료 - jobId=%s label=%s pAi=%.4f latencyMs=%.2f",
@@ -145,6 +157,34 @@ async def run_analysis(
     finally:
         if owns_service:
             await service.shutdown()
+
+
+def _resolve_heatmap_score(heatmap: Optional[Dict[str, Any]]) -> Optional[float]:
+    """히트맵 셀에서 최대 AI 확률을 추출한다."""
+
+    if not heatmap or not isinstance(heatmap, dict):
+        return None
+    cells: Sequence[Dict[str, Any]] | None = heatmap.get("cells")
+    if not isinstance(cells, Sequence):
+        return None
+    best = None
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        ai_max = cell.get("ai_max")
+        ai_mean = cell.get("ai_mean")
+        for candidate in (ai_max, ai_mean):
+            if isinstance(candidate, (int, float)):
+                value = float(candidate)
+                if best is None or value > best:
+                    best = value
+    if best is None:
+        return None
+    if best < 0.0:
+        return 0.0
+    if best > 1.0:
+        return 1.0
+    return best
 
 
 __all__ = ["run_analysis"]

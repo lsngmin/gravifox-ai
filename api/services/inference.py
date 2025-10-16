@@ -19,7 +19,7 @@ from PIL import Image
 
 from core.datasets.base import load_dataset_config
 from core.datasets.transforms import build_val_transforms
-from core.models.multipatch import aggregate_scores, generate_patches
+from core.models.multipatch import PatchSample, aggregate_scores, generate_patches
 from core.models.registry import get_model
 from core.utils.logger import get_logger, log_time
 
@@ -102,30 +102,39 @@ class VitInferenceService:
         use_multipatch = self._should_use_multipatch(pipeline)
 
         if use_multipatch:
-            patch_tensors = self._prepare_multipatch_tensors(rgb_image, pipeline)
-            if len(patch_tensors) <= 1:
+            patch_entries = self._prepare_multipatch_inputs(rgb_image, pipeline)
+            if len(patch_entries) <= 1:
                 use_multipatch = False
             else:
                 metadata["mode"] = "multi"
-                metadata["patch_count"] = len(patch_tensors)
+                metadata["patch_count"] = len(patch_entries)
                 self._logger.info(
                     "멀티패치 추론 시작 - patches=%d scales=%s aggregate=%s",
-                    len(patch_tensors),
+                    len(patch_entries),
                     list(pipeline.inference_scales),
                     pipeline.inference_aggregate,
                 )
                 patch_futures = [
-                    self._batch_queue.enqueue(tensor) for tensor in patch_tensors
+                    self._batch_queue.enqueue(tensor) for tensor, _ in patch_entries
                 ]
                 patch_distributions = await asyncio.gather(*patch_futures)
-                aggregated = self._aggregate_patch_probs(patch_distributions, pipeline)
+                aggregated, patch_scores = self._aggregate_patch_probs(
+                    patch_distributions, pipeline
+                )
+                patch_details = self._summarize_patch_outputs(
+                    patch_entries, patch_distributions, patch_scores
+                )
+                if patch_details:
+                    metadata["patches"] = patch_details
+                    metadata["grid"] = self._infer_patch_grid(patch_details)
+                    metadata["heatmap"] = self._build_heatmap(patch_details)
                 real_idx = pipeline.real_index if pipeline.real_index < len(aggregated) else 0
                 ai_idx = 1 if real_idx == 0 else 0
                 real_score = float(aggregated[real_idx]) if 0 <= real_idx < len(aggregated) else float("nan")
                 ai_score = float(aggregated[ai_idx]) if 0 <= ai_idx < len(aggregated) else float("nan")
                 self._logger.info(
                     "멀티패치 추론 완료 - patches=%d real=%.4f ai=%.4f",
-                    len(patch_tensors),
+                    len(patch_entries),
                     real_score,
                     ai_score,
                 )
@@ -456,26 +465,30 @@ class VitInferenceService:
             return False
         return pipeline.inference_n_patches > 1
 
-    def _prepare_multipatch_tensors(
+    def _prepare_multipatch_inputs(
         self, image: Image.Image, pipeline: VitPipeline
-    ) -> List[torch.Tensor]:
-        """멀티패치 텐서 배치를 생성한다."""
+    ) -> List[Tuple[torch.Tensor, PatchSample]]:
+        """멀티패치 텐서와 메타데이터를 생성한다."""
 
         sizes: Sequence[int] = pipeline.inference_scales or (224,)
-        patches = generate_patches(
+        patch_samples = generate_patches(
             image, sizes=sizes, n_patches=pipeline.inference_n_patches
         )
-        tensors: List[torch.Tensor] = []
-        for patch in patches:
-            rgb_patch = patch if patch.mode == "RGB" else patch.convert("RGB")
+        entries: List[Tuple[torch.Tensor, PatchSample]] = []
+        for sample in patch_samples:
+            rgb_patch = (
+                sample.image
+                if sample.image.mode == "RGB"
+                else sample.image.convert("RGB")
+            )
             tensor = pipeline.transform(rgb_patch).unsqueeze(0).contiguous()
-            tensors.append(tensor)
-        return tensors
+            entries.append((tensor, sample))
+        return entries
 
     def _aggregate_patch_probs(
         self, patch_probs: Sequence[Sequence[float]], pipeline: VitPipeline
-    ) -> List[float]:
-        """패치별 확률을 하나의 분포로 병합한다."""
+    ) -> Tuple[List[float], List[Dict[str, float]]]:
+        """패치별 확률을 병합하고 개별 확률도 반환한다."""
 
         if not patch_probs:
             raise ValueError("patch_probs is empty")
@@ -516,7 +529,131 @@ class VitInferenceService:
         total = sum(fused)
         if total > 0:
             fused = [float(value / total) for value in fused]
-        return fused
+        return fused, patch_scores
+
+    def _summarize_patch_outputs(
+        self,
+        patch_entries: Sequence[Tuple[torch.Tensor, PatchSample]],
+        patch_distributions: Sequence[Sequence[float]],
+        patch_scores: Sequence[Dict[str, float]],
+    ) -> List[Dict[str, Any]]:
+        """패치 추론 결과를 프론트엔드가 활용할 수 있는 형태로 정리한다."""
+
+        summaries: List[Dict[str, Any]] = []
+        for (_, sample), distribution, score in zip(
+            patch_entries, patch_distributions, patch_scores
+        ):
+            bbox = {
+                "x1": float(sample.bbox[0]),
+                "y1": float(sample.bbox[1]),
+                "x2": float(sample.bbox[2]),
+                "y2": float(sample.bbox[3]),
+            }
+            grid = {"row": int(sample.grid_index[0]), "col": int(sample.grid_index[1])}
+            summary = {
+                "index": int(sample.patch_index),
+                "scale": int(sample.scale),
+                "scale_index": int(sample.scale_index),
+                "bbox": bbox,
+                "grid": grid,
+                "scores": {
+                    "ai": float(score["ai"]),
+                    "real": float(score["real"]),
+                    "distribution": [float(value) for value in distribution],
+                },
+            }
+            summaries.append(summary)
+
+        summaries.sort(key=lambda item: item["index"])
+        return summaries
+
+    @staticmethod
+    def _infer_patch_grid(patch_details: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+        """패치 메타데이터에서 격자 크기를 추론한다."""
+
+        if not patch_details:
+            return {"rows": 0, "cols": 0}
+
+        max_row = max(detail.get("grid", {}).get("row", 0) for detail in patch_details)
+        max_col = max(detail.get("grid", {}).get("col", 0) for detail in patch_details)
+        return {"rows": int(max_row) + 1, "cols": int(max_col) + 1}
+
+    @staticmethod
+    def _build_heatmap(patch_details: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        """패치별 점수를 격자 형태의 히트맵으로 변환한다."""
+
+        if not patch_details:
+            return {"rows": 0, "cols": 0, "cells": []}
+
+        rows = max(detail["grid"]["row"] for detail in patch_details) + 1
+        cols = max(detail["grid"]["col"] for detail in patch_details) + 1
+
+        cells: Dict[Tuple[int, int], Dict[str, Any]] = {}
+        for detail in patch_details:
+            row = int(detail["grid"]["row"])
+            col = int(detail["grid"]["col"])
+            key = (row, col)
+            cell = cells.setdefault(
+                key,
+                {
+                    "row": row,
+                    "col": col,
+                    "ai_values": [],
+                    "real_values": [],
+                    "scales": [],
+                },
+            )
+
+            ai_score = float(detail["scores"]["ai"])
+            real_score = float(detail["scores"]["real"])
+            cell["ai_values"].append(ai_score)
+            cell["real_values"].append(real_score)
+
+            cell["scales"].append(
+                {
+                    "scale": int(detail["scale"]),
+                    "scale_index": int(detail["scale_index"]),
+                    "bbox": {
+                        "x1": float(detail["bbox"]["x1"]),
+                        "y1": float(detail["bbox"]["y1"]),
+                        "x2": float(detail["bbox"]["x2"]),
+                        "y2": float(detail["bbox"]["y2"]),
+                    },
+                    "scores": {
+                        "ai": ai_score,
+                        "real": real_score,
+                        "distribution": [
+                            float(value) for value in detail["scores"]["distribution"]
+                        ],
+                    },
+                }
+            )
+
+        cells_payload: List[Dict[str, Any]] = []
+        for cell in cells.values():
+            ai_values = cell.pop("ai_values")
+            real_values = cell.pop("real_values")
+            scales = cell["scales"]
+            scales.sort(key=lambda item: (item["scale_index"], item["scale"]))
+            ai_mean = sum(ai_values) / len(ai_values) if ai_values else 0.0
+            real_mean = sum(real_values) / len(real_values) if real_values else 0.0
+            best_scale = max(scales, key=lambda item: item["scores"]["ai"])
+            cells_payload.append(
+                {
+                    "row": cell["row"],
+                    "col": cell["col"],
+                    "ai_mean": float(ai_mean),
+                    "real_mean": float(real_mean),
+                    "ai_max": float(max(ai_values) if ai_values else 0.0),
+                    "real_max": float(max(real_values) if real_values else 0.0),
+                    "best_scale_index": int(best_scale["scale_index"]),
+                    "best_scale": int(best_scale["scale"]),
+                    "scales": scales,
+                }
+            )
+
+        cells_payload.sort(key=lambda item: (item["row"], item["col"]))
+        return {"rows": rows, "cols": cols, "cells": cells_payload}
 
     async def _predict_batch(self, batch: torch.Tensor) -> torch.Tensor:
         """비동기 배치 추론을 실행한다.
