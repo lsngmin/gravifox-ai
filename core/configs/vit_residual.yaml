@@ -43,7 +43,7 @@ trainer:
 run:
   seed: 1337
   output_dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/${model.name}/${now:%Y%m%d_%H%M%S}
-  name: vit_residual
+  name: vit_residual_multiscale
 
 dataset:
   data_root: /home/smin/datasets/genimage
