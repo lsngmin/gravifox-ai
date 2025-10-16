@@ -51,7 +51,7 @@ def run_inference(
     pil_image: Image.Image,
     model: torch.nn.Module,
     mode: str = "single",
-    n_patches: int = 12,
+    n_patches: int = 0,
     scales: Sequence[int] = (224, 336),
     device: str = "cuda",
     uncertain_band: Tuple[float, float] = (0.45, 0.55),
@@ -59,8 +59,16 @@ def run_inference(
     """PIL 이미지를 받아 진위 여부를 추론한다."""
 
     start = time.perf_counter()
+    patch_count = 1
     if mode == "multi":
-        patches = generate_patches(pil_image, sizes=scales, n_patches=n_patches)
+        min_cell_size = min(scales) if scales else 224
+        patches = generate_patches(
+            pil_image,
+            sizes=scales,
+            n_patches=n_patches,
+            min_cell_size=min_cell_size,
+        )
+        patch_count = max(1, len(patches))
         patch_scores = infer_patches(model, patches, device=device)
         scores = aggregate_scores(patch_scores)
     else:
@@ -86,7 +94,7 @@ def run_inference(
         "model_version": getattr(model, "model_version", "unknown"),
         "inference": {
             "mode": mode,
-            "n_patches": n_patches if mode == "multi" else 1,
+            "n_patches": patch_count if mode == "multi" else 1,
             "scales": list(scales),
             "latency_ms": float(latency),
         },

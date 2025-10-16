@@ -107,6 +107,7 @@ class VitInferenceService:
                 use_multipatch = False
             else:
                 metadata["mode"] = "multi"
+                metadata["n_patches"] = len(patch_entries)
                 metadata["patch_count"] = len(patch_entries)
                 self._logger.info(
                     "멀티패치 추론 시작 - patches=%d scales=%s aggregate=%s",
@@ -392,17 +393,17 @@ class VitInferenceService:
             scales = ()
 
         try:
-            n_patches = int(raw_cfg.get("n_patches") or raw_cfg.get("patches") or 1)
+            n_patches = int(raw_cfg.get("n_patches") or raw_cfg.get("patches") or 0)
         except (TypeError, ValueError):
-            n_patches = 1
-        if n_patches < 1:
-            n_patches = 1
+            n_patches = 0
+        if n_patches < 0:
+            n_patches = 0
 
         aggregate = str(raw_cfg.get("aggregate") or "mean").lower()
         if aggregate not in {"mean", "max", "quality_weighted"}:
             aggregate = "mean"
 
-        mode = "multi" if n_patches > 1 or len(scales) > 1 else "single"
+        mode = "multi" if n_patches == 0 or n_patches > 1 or len(scales) > 1 else "single"
         if not self._settings.vit_enable_multipatch:
             mode = "single"
             n_patches = 1
@@ -463,6 +464,8 @@ class VitInferenceService:
             return False
         if pipeline.inference_mode != "multi":
             return False
+        if pipeline.inference_n_patches == 0:
+            return True
         return pipeline.inference_n_patches > 1
 
     def _prepare_multipatch_inputs(
@@ -472,7 +475,10 @@ class VitInferenceService:
 
         sizes: Sequence[int] = pipeline.inference_scales or (224,)
         patch_samples = generate_patches(
-            image, sizes=sizes, n_patches=pipeline.inference_n_patches
+            image,
+            sizes=sizes,
+            n_patches=pipeline.inference_n_patches,
+            min_cell_size=min(sizes),
         )
         entries: List[Tuple[torch.Tensor, PatchSample]] = []
         for sample in patch_samples:

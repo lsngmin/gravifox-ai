@@ -77,9 +77,10 @@ def build_vit_multipatch(**kwargs) -> ViTMultiPatch:
 def generate_patches(
     pil_image: Image.Image,
     sizes: Sequence[int] = (224, 336),
-    n_patches: int = 12,
+    n_patches: int = 0,
     grid_rows: Optional[int] = None,
     grid_cols: Optional[int] = None,
+    min_cell_size: Optional[int] = None,
 ) -> List[PatchSample]:
     """원본 이미지를 고정 격자 기반으로 잘라 패치 리스트를 생성한다.
 
@@ -90,6 +91,7 @@ def generate_patches(
         n_patches: 생성할 패치 개수.
         grid_rows: 격자 행 수를 직접 지정하고 싶을 때 사용.
         grid_cols: 격자 열 수를 직접 지정하고 싶을 때 사용.
+        min_cell_size: 이미지 전체를 커버하기 위해 사용할 최소 셀 크기.
 
     Returns:
         PatchSample 리스트. 각 항목은 패치 이미지와 정규화된 위치,
@@ -111,12 +113,19 @@ def generate_patches(
         raise ValueError("이미지 크기가 0입니다.")
 
     num_scales = max(1, len(sizes))
-    effective_cells = max(1, math.ceil(n_patches / num_scales))
 
-    if grid_rows is None or grid_cols is None:
-        grid_rows, grid_cols = _suggest_grid(effective_cells)
-    grid_rows = max(1, grid_rows)
-    grid_cols = max(1, grid_cols)
+    cell_size = int(max(1, min_cell_size or min(sizes)))
+    coverage_rows = max(1, math.ceil(h / cell_size))
+    coverage_cols = max(1, math.ceil(w / cell_size))
+
+    if grid_rows is None:
+        grid_rows = coverage_rows
+    else:
+        grid_rows = max(grid_rows, coverage_rows)
+    if grid_cols is None:
+        grid_cols = coverage_cols
+    else:
+        grid_cols = max(grid_cols, coverage_cols)
 
     step_x = w / grid_cols
     step_y = h / grid_rows
@@ -167,15 +176,16 @@ def generate_patches(
                 )
                 patch_counter += 1
 
-                if len(samples) >= n_patches:
+                if n_patches and n_patches > 0 and len(samples) >= n_patches:
                     logger.info(
-                        "격자 기반 멀티패치 생성 - 총 %d개, 격자=%dx%d, 스케일=%s",
+                        "격자 기반 멀티패치 생성 (제한 적용) - 생성=%d 제한=%d 격자=%dx%d 스케일=%s",
                         len(samples),
+                        n_patches,
                         grid_rows,
                         grid_cols,
                         list(sizes),
                     )
-                    return samples
+                    return samples[:n_patches]
 
     logger.info(
         "격자 기반 멀티패치 생성 - 총 %d개, 격자=%dx%d, 스케일=%s",

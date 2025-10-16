@@ -64,7 +64,7 @@ augment:
 
 inference:
   multiscale: [224, 336]
-  n_patches: 12
+  n_patches: 0
   aggregate: mean
   uncertain_band: [0.45, 0.55]
 
