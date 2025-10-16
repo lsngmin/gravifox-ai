@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional, Sequence, Tuple, List
 
 import math
 import os
@@ -10,9 +10,12 @@ import torch
 import torch.nn as nn
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
+from PIL import Image
+from torchvision import transforms as vision_transforms
 
 from core.utils.logger import get_logger, get_train_logger
 from core.utils.seed import set_seed as set_global_seed
+from core.models.multipatch import aggregate_scores, generate_patches
 from .experiment_manager import ExperimentManager, MonitorConfig
 from .metrics import classification_metrics, top1_accuracy
 from .optim import create_optimizer
@@ -85,11 +88,19 @@ class Trainer:
         cfg: TrainCfg,
         experiment: Optional[ExperimentManager] = None,
         accelerator: Optional[Accelerator] = None,
+        inference_cfg: Optional[Dict[str, object]] = None,
+        inference_transform: Optional[torch.nn.Module] = None,
+        train_augment: Optional[Callable[[Image.Image], Image.Image]] = None,
     ) -> None:
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.cfg = cfg
+        self.inference_cfg = inference_cfg or {}
+        self.inference_transform = inference_transform
+        self.train_augment = train_augment
+        self._to_pil = vision_transforms.ToPILImage()
+        self._init_inference_settings()
 
         monitor = MonitorConfig(key=cfg.ckpt_monitor, mode=cfg.ckpt_mode)
         self.experiment = experiment or ExperimentManager(Path(out_dir), monitor=monitor)
@@ -159,6 +170,96 @@ class Trainer:
                 self._loader_summary(self.val_loader),
             )
 
+    def _init_inference_settings(self) -> None:
+        cfg = self.inference_cfg or {}
+        raw_scales = cfg.get("multiscale") or cfg.get("scales") or (224,)
+        if isinstance(raw_scales, (int, float)):
+            scales = (int(raw_scales),)
+        elif isinstance(raw_scales, (list, tuple)):
+            scales = tuple(int(float(s)) for s in raw_scales if s is not None)
+            if not scales:
+                scales = (224,)
+        else:
+            scales = (224,)
+
+        raw_cells = (
+            cfg.get("cell_sizes")
+            or cfg.get("min_cell_sizes")
+            or cfg.get("min_cell_size")
+            or cfg.get("cell_size")
+        )
+        if isinstance(raw_cells, (int, float)):
+            cell_sizes = tuple([int(raw_cells)] * len(scales))
+        elif isinstance(raw_cells, (list, tuple)):
+            normalized = [int(float(c)) for c in raw_cells if c is not None]
+            if not normalized:
+                cell_sizes = scales
+            elif len(normalized) == 1 and len(scales) > 1:
+                cell_sizes = tuple([normalized[0]] * len(scales))
+            elif len(normalized) == len(scales):
+                cell_sizes = tuple(normalized)
+            else:
+                cell_sizes = scales
+        else:
+            cell_sizes = scales
+
+        try:
+            n_patches = int(cfg.get("n_patches") or cfg.get("patches") or 0)
+        except (TypeError, ValueError):
+            n_patches = 0
+
+        aggregate = str(cfg.get("aggregate") or "mean").lower()
+        if aggregate not in {"mean", "max", "quality_weighted"}:
+            aggregate = "mean"
+
+        if self.inference_transform is None:
+            raise ValueError(
+                "inference_transform must be provided to Trainer to match service inference pipeline."
+            )
+
+        self.inference_scales: Tuple[int, ...] = tuple(scales)
+        self.inference_cell_sizes: Tuple[int, ...] = tuple(cell_sizes)
+        self.inference_n_patches: int = max(0, n_patches)
+        self.inference_aggregate: str = aggregate
+
+    def _evaluate_validation_image(self, image: Image.Image) -> Tuple[torch.Tensor, torch.Tensor]:
+        patch_samples = generate_patches(
+            image,
+            sizes=self.inference_scales,
+            n_patches=self.inference_n_patches,
+            min_cell_size=self.inference_cell_sizes,
+        )
+        if not patch_samples:
+            base_probs = torch.tensor([0.5, 0.5], device=self.accel.device, dtype=torch.float32)
+            logits_tensor = torch.log(torch.clamp(base_probs, min=1e-8))
+            return base_probs, logits_tensor
+
+        tensors = []
+        for sample in patch_samples:
+            patch_img = sample.image if sample.image.mode == "RGB" else sample.image.convert("RGB")
+            tensor = self.inference_transform(patch_img).unsqueeze(0)
+            tensors.append(tensor)
+
+        batch_tensor = torch.cat(tensors, dim=0).to(self.accel.device)
+        with self.accel.autocast():
+            logits = self.model(batch_tensor)
+            probs = torch.softmax(logits, dim=1)
+
+        probs_cpu = probs.detach().cpu()
+        patch_scores = [
+            {"real": float(prob[0]), "ai": float(prob[1])}
+            for prob in probs_cpu
+        ]
+        aggregated = aggregate_scores(patch_scores, method=self.inference_aggregate)
+        probs_tensor = torch.tensor(
+            [aggregated["real"], aggregated["ai"]],
+            device=self.accel.device,
+            dtype=torch.float32,
+        )
+        probs_tensor = torch.clamp(probs_tensor, min=1e-8)
+        logits_tensor = torch.log(probs_tensor)
+        return probs_tensor, logits_tensor
+
     # ------------------------------------------------------------------
     # Builders
     # ------------------------------------------------------------------
@@ -224,21 +325,86 @@ class Trainer:
         total_count = 0
         steps_processed = 0
 
-        for step, (images, targets) in enumerate(self.train_loader, start=1):
+        for step, batch in enumerate(self.train_loader, start=1):
+            if not batch:
+                continue
+            sample_losses: List[torch.Tensor] = []
+            sample_ai_scores: List[float] = []
+            sample_real_scores: List[float] = []
+            sample_targets: List[int] = []
+
             with self.accel.accumulate(self.model):
-                with self.accel.autocast():
-                    logits = self.model(images)
-                    loss = self.criterion(logits, targets)
-                self.accel.backward(loss)
+                for image, target in batch:
+                    if isinstance(image, torch.Tensor):
+                        image = self._to_pil(image.cpu())
+                    elif not isinstance(image, Image.Image):
+                        raise TypeError(f"Unsupported training sample type: {type(image)}")
+
+                    if self.train_augment is not None:
+                        augmented = self.train_augment(image)
+                        if isinstance(augmented, Image.Image):
+                            image = augmented
+                        elif isinstance(augmented, torch.Tensor):
+                            image = self._to_pil(augmented.cpu())
+                        else:
+                            raise TypeError("train_augment must return PIL.Image or Tensor")
+
+                    patch_samples = generate_patches(
+                        image,
+                        sizes=self.inference_scales,
+                        n_patches=self.inference_n_patches,
+                        min_cell_size=self.inference_cell_sizes,
+                    )
+                    if not patch_samples:
+                        continue
+
+                    tensors = []
+                    for sample in patch_samples:
+                        patch_img = sample.image if sample.image.mode == "RGB" else sample.image.convert("RGB")
+                        tensor = self.inference_transform(patch_img).unsqueeze(0)
+                        tensors.append(tensor)
+
+                    patch_tensor = torch.cat(tensors, dim=0).to(self.accel.device)
+                    target_idx = int(target) if not isinstance(target, torch.Tensor) else int(target.item())
+                    patch_targets = torch.full(
+                        (patch_tensor.size(0),),
+                        target_idx,
+                        device=self.accel.device,
+                        dtype=torch.long,
+                    )
+
+                    with self.accel.autocast():
+                        patch_logits = self.model(patch_tensor)
+                        patch_loss = self.criterion(patch_logits, patch_targets)
+
+                    sample_losses.append(patch_loss)
+
+                    patch_probs = torch.softmax(patch_logits.detach(), dim=1).cpu()
+                    patch_scores = [
+                        {"real": float(prob[0]), "ai": float(prob[1])}
+                        for prob in patch_probs
+                    ]
+                    aggregated = aggregate_scores(patch_scores, method=self.inference_aggregate)
+                    sample_ai_scores.append(float(aggregated["ai"]))
+                    sample_real_scores.append(float(aggregated["real"]))
+                    sample_targets.append(target_idx)
+
+                if not sample_losses:
+                    continue
+
+                batch_loss = torch.stack(sample_losses).mean()
+                self.accel.backward(batch_loss)
                 if self.accel.sync_gradients and self.cfg.max_grad_norm > 0:
                     self.accel.clip_grad_norm_(self.model.parameters(), max_norm=self.cfg.max_grad_norm)
                 self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
 
-            bs = targets.size(0)
-            total_loss += loss.detach().item() * bs
-            total_acc += top1_accuracy(logits.detach(), targets) * bs
-            total_count += bs
+            sample_count = len(sample_targets)
+            total_loss += batch_loss.detach().item() * sample_count
+            for ai_score, real_score, tgt in zip(sample_ai_scores, sample_real_scores, sample_targets):
+                total_count += 1
+                pred_idx = 1 if ai_score >= real_score else 0
+                total_acc += 1.0 if pred_idx == tgt else 0.0
 
             steps_processed += 1
 
@@ -269,17 +435,31 @@ class Trainer:
         total_count = 0
         logits_collector = []
         targets_collector = []
-        for images, targets in self.val_loader:
-            with self.accel.autocast():
-                logits = self.model(images)
-                loss = self.criterion(logits, targets)
-            bs = targets.size(0)
-            total_loss += loss.detach().item() * bs
-            total_acc += top1_accuracy(logits.detach(), targets) * bs
-            total_count += bs
+        eps = 1e-8
+        for batch in self.val_loader:
+            if not batch:
+                continue
+            for image, target in batch:
+                if isinstance(image, torch.Tensor):
+                    image = self._to_pil(image.cpu())
+                elif not isinstance(image, Image.Image):
+                    raise TypeError(f"Unsupported validation sample type: {type(image)}")
+                probs_tensor, logits_tensor = self._evaluate_validation_image(image)
+                if isinstance(target, torch.Tensor):
+                    target_idx = int(target.item())
+                else:
+                    target_idx = int(target)
 
-            logits_collector.append(self.accel.gather(logits.detach()))
-            targets_collector.append(self.accel.gather(targets))
+                loss = -torch.log(torch.clamp(probs_tensor[target_idx], min=eps))
+                total_loss += float(loss.item())
+                pred_idx = int(torch.argmax(probs_tensor).item())
+                if pred_idx == target_idx:
+                    total_acc += 1.0
+                total_count += 1
+
+                logits_collector.append(self.accel.gather(logits_tensor.unsqueeze(0)))
+                target_tensor = torch.tensor([target_idx], device=self.accel.device, dtype=torch.long)
+                targets_collector.append(self.accel.gather(target_tensor))
 
         metrics = {"loss": total_loss / max(1, total_count), "acc": total_acc / max(1, total_count)}
         if logits_collector:

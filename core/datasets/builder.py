@@ -10,7 +10,7 @@ from PIL import Image, UnidentifiedImageError
 import torch
 from torch.utils.data import ConcatDataset, DataLoader, Subset, WeightedRandomSampler, get_worker_info
 from torch.utils.data.distributed import DistributedSampler
-from torchvision import datasets
+from torchvision import datasets, transforms
 
 from core.utils.logger import get_logger
 
@@ -20,6 +20,10 @@ from .transforms import build_train_transforms, build_val_transforms
 
 logger = get_logger(__name__)
 _DEBUG_WORKERS = os.environ.get("TVB_DATALOADER_DEBUG_WORKERS")
+
+
+def _identity_collate(batch):
+    return batch
 
 
 def _get_worker_init_fn(tag: str):
@@ -166,7 +170,9 @@ def build_dataloaders(
     world_size: int = 1,
     rank: int = 0,
     seed: Optional[int] = None,
-) -> Tuple[DataLoader, Optional[DataLoader], list[str]]:
+    return_raw_val_images: bool = False,
+    return_raw_train_images: bool = False,
+) -> Tuple[DataLoader, Optional[DataLoader], list[str], transforms.Compose, Optional[callable]]:
     """DatasetConfig를 받아 학습/검증 DataLoader를 생성한다."""
 
     dataset_cfg = load_dataset_config(cfg)
@@ -193,7 +199,15 @@ def build_dataloaders(
         sns_config = dataset_cfg.augment.get("sns")
     sns_aug = build_sns_augment(sns_config)
     train_tf = build_train_transforms(dataset_cfg, sns_aug)
-    val_tf = build_val_transforms(dataset_cfg)
+    val_service_tf = build_val_transforms(dataset_cfg)
+    val_tf = val_service_tf
+
+    if return_raw_val_images:
+        val_tf = None
+        val_loader_kwargs["collate_fn"] = _identity_collate
+    if return_raw_train_images:
+        train_tf = None
+        train_loader_kwargs["collate_fn"] = _identity_collate
 
     sources = _resolve_sources(dataset_cfg)
     train_datasets = []
@@ -361,4 +375,5 @@ def build_dataloaders(
             source_label,
             sampler_label,
         )
-    return train_loader, val_loader, list(class_names)
+    train_augment = sns_aug if return_raw_train_images else None
+    return train_loader, val_loader, list(class_names), val_service_tf, train_augment

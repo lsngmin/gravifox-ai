@@ -188,11 +188,13 @@ def run_training(cfg: DictConfig) -> Path:
     _sync_processes(accelerator)
 
     dataset_cfg = cfg.dataset
-    train_loader, val_loader, class_names = build_dataloaders(
+    train_loader, val_loader, class_names, val_infer_transform, train_augment = build_dataloaders(
         dataset_cfg,
         world_size=world_size,
         rank=rank,
         seed=cfg.run.seed,
+        return_raw_val_images=True,
+        return_raw_train_images=True,
     )
     if accelerator.is_main_process:
         logger.info("데이터셋 클래스: %s", class_names)
@@ -217,6 +219,9 @@ def run_training(cfg: DictConfig) -> Path:
         cfg=train_cfg,
         experiment=manager,
         accelerator=accelerator,
+        inference_cfg=_to_dict(getattr(cfg, "inference", {})) or {},
+        inference_transform=val_infer_transform,
+        train_augment=train_augment,
     )
     final_val_metrics = trainer.fit()
 
