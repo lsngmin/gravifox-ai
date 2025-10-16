@@ -102,6 +102,7 @@ async def run_analysis(
                 "n_patches": inference_meta.get("n_patches"),
                 "patch_count": inference_meta.get("patch_count"),
                 "scales": inference_meta.get("scales"),
+                "cell_sizes": inference_meta.get("cell_sizes"),
                 "aggregate": inference_meta.get("aggregate"),
                 "latencyMs": latency_ms,
                 "device": str(pipeline.device),

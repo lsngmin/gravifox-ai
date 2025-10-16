@@ -74,13 +74,61 @@ def build_vit_multipatch(**kwargs) -> ViTMultiPatch:
     return ViTMultiPatch(cfg)
 
 
+def _normalize_per_scale(
+    value: Optional[Union[int, Sequence[Optional[int]]]],
+    length: int,
+    default_fn,
+) -> List[int]:
+    """값을 스케일별 리스트로 확장한다."""
+
+    if value is None:
+        return [int(max(1, default_fn(i))) for i in range(length)]
+    if isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            return [int(max(1, default_fn(i))) for i in range(length)]
+        if len(value) == 1:
+            raw = value[0]
+            return [int(max(1, raw if raw is not None else default_fn(i))) for i in range(length)]
+        if len(value) != length:
+            raise ValueError("per-scale 값의 길이가 스케일 개수와 일치해야 합니다.")
+        normalized: List[int] = []
+        for idx, raw in enumerate(value):
+            base = default_fn(idx)
+            normalized.append(int(max(1, raw if raw is not None else base)))
+        return normalized
+    base_value = int(value)
+    return [int(max(1, base_value)) for _ in range(length)]
+
+
+def _normalize_optional_ints(
+    value: Optional[Union[int, Sequence[Optional[int]]]],
+    length: int,
+) -> List[Optional[int]]:
+    if value is None:
+        return [None] * length
+    if isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            return [None] * length
+        if len(value) == 1:
+            raw = value[0]
+            casted = int(raw) if raw is not None else None
+            return [casted] * length
+        if len(value) != length:
+            raise ValueError("per-scale 격자 값의 길이가 스케일 개수와 일치해야 합니다.")
+        normalized: List[Optional[int]] = []
+        for raw in value:
+            normalized.append(int(raw) if raw is not None else None)
+        return normalized
+    return [int(value)] * length
+
+
 def generate_patches(
     pil_image: Image.Image,
     sizes: Sequence[int] = (224, 336),
     n_patches: int = 0,
-    grid_rows: Optional[int] = None,
-    grid_cols: Optional[int] = None,
-    min_cell_size: Optional[int] = None,
+    grid_rows: Optional[Union[int, Sequence[Optional[int]]]] = None,
+    grid_cols: Optional[Union[int, Sequence[Optional[int]]]] = None,
+    min_cell_size: Optional[Union[int, Sequence[Optional[int]]]] = None,
 ) -> List[PatchSample]:
     """원본 이미지를 고정 격자 기반으로 잘라 패치 리스트를 생성한다.
 
@@ -114,20 +162,30 @@ def generate_patches(
 
     num_scales = max(1, len(sizes))
 
-    cell_size = int(max(1, min_cell_size or min(sizes)))
-    coverage_rows = max(1, math.ceil(h / cell_size))
-    coverage_cols = max(1, math.ceil(w / cell_size))
+    per_scale_cell_sizes = _normalize_per_scale(
+        min_cell_size,
+        num_scales,
+        lambda idx: sizes[idx],
+    )
+    per_scale_rows_hint = _normalize_optional_ints(grid_rows, num_scales)
+    per_scale_cols_hint = _normalize_optional_ints(grid_cols, num_scales)
 
-    if grid_rows is None:
-        grid_rows = coverage_rows
-    else:
-        grid_rows = max(grid_rows, coverage_rows)
-    if grid_cols is None:
-        grid_cols = coverage_cols
-    else:
-        grid_cols = max(grid_cols, coverage_cols)
+    layouts: List[Tuple[int, int, float, float, float]] = []
+    total_required = 0
+    max_edge_global = float(min(w, h))
 
-    total_required = grid_rows * grid_cols * num_scales
+    for idx in range(num_scales):
+        cell = per_scale_cell_sizes[idx]
+        coverage_rows = max(1, math.ceil(h / cell))
+        coverage_cols = max(1, math.ceil(w / cell))
+        rows = max(per_scale_rows_hint[idx] or coverage_rows, coverage_rows)
+        cols = max(per_scale_cols_hint[idx] or coverage_cols, coverage_cols)
+        step_x = w / cols
+        step_y = h / rows
+        base_edge = max(1.0, min(step_x, step_y))
+        layouts.append((rows, cols, step_x, step_y, base_edge))
+        total_required += rows * cols
+
     if n_patches and n_patches > 0 and n_patches < total_required:
         logger.info(
             "요청한 n_patches=%d 가 전체 커버리지(%d)를 만족하지 못해 조정합니다.",
@@ -136,21 +194,17 @@ def generate_patches(
         )
         n_patches = total_required
 
-    step_x = w / grid_cols
-    step_y = h / grid_rows
-    base_edge = max(1.0, min(step_x, step_y))
-    max_edge = float(min(w, h))
-
     samples: List[PatchSample] = []
     patch_counter = 0
 
     for scale_index, ratio in enumerate(ratios):
-        for row in range(grid_rows):
+        rows, cols, step_x, step_y, base_edge = layouts[scale_index]
+        for row in range(rows):
             center_y = (row + 0.5) * step_y
-            for col in range(grid_cols):
+            for col in range(cols):
                 center_x = (col + 0.5) * step_x
 
-                desired_edge = min(base_edge * ratio, max_edge)
+                desired_edge = min(base_edge * ratio, max_edge_global)
                 if desired_edge < 1.0:
                     desired_edge = 1.0
                 half = desired_edge / 2.0
@@ -187,20 +241,16 @@ def generate_patches(
 
                 if n_patches and n_patches > 0 and len(samples) >= n_patches:
                     logger.info(
-                        "격자 기반 멀티패치 생성 (제한 적용) - 생성=%d 제한=%d 격자=%dx%d 스케일=%s",
+                        "격자 기반 멀티패치 생성 (제한 적용) - 생성=%d 제한=%d 스케일=%s",
                         len(samples),
                         n_patches,
-                        grid_rows,
-                        grid_cols,
                         list(sizes),
                     )
                     return samples[:n_patches]
 
     logger.info(
-        "격자 기반 멀티패치 생성 - 총 %d개, 격자=%dx%d, 스케일=%s",
+        "격자 기반 멀티패치 생성 - 총 %d개, 스케일=%s",
         len(samples),
-        grid_rows,
-        grid_cols,
         list(sizes),
     )
     return samples

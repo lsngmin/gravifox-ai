@@ -41,6 +41,7 @@ class VitPipeline:
     inference_mode: str
     inference_scales: Tuple[int, ...]
     inference_n_patches: int
+    inference_cell_sizes: Tuple[int, ...]
     inference_aggregate: str
     uncertainty_band: Tuple[float, float]
 
@@ -95,6 +96,7 @@ class VitInferenceService:
             "mode": pipeline.inference_mode,
             "n_patches": pipeline.inference_n_patches,
             "scales": list(pipeline.inference_scales),
+            "cell_sizes": list(pipeline.inference_cell_sizes),
             "aggregate": pipeline.inference_aggregate,
         }
 
@@ -392,6 +394,31 @@ class VitInferenceService:
         else:
             scales = ()
 
+        raw_cell_sizes = (
+            raw_cfg.get("cell_sizes")
+            or raw_cfg.get("min_cell_sizes")
+            or raw_cfg.get("min_cell_size")
+            or raw_cfg.get("cell_size")
+        )
+        if isinstance(raw_cell_sizes, (list, tuple)):
+            normalized_cells: List[int] = []
+            for value in raw_cell_sizes:
+                try:
+                    normalized_cells.append(int(max(1, float(value))))
+                except (TypeError, ValueError):
+                    continue
+            if len(normalized_cells) == 1 and len(scales) > 1:
+                cell_sizes = tuple([normalized_cells[0]] * len(scales))
+            elif len(normalized_cells) == len(scales):
+                cell_sizes = tuple(normalized_cells)
+            else:
+                cell_sizes = tuple(max(1, scale) for scale in scales)
+        elif isinstance(raw_cell_sizes, (int, float)):
+            val = max(1, int(raw_cell_sizes))
+            cell_sizes = tuple([val] * len(scales))
+        else:
+            cell_sizes = tuple(max(1, scale) for scale in scales)
+
         try:
             n_patches = int(raw_cfg.get("n_patches") or raw_cfg.get("patches") or 0)
         except (TypeError, ValueError):
@@ -420,6 +447,7 @@ class VitInferenceService:
             "inference_mode": mode,
             "inference_scales": scales,
             "inference_n_patches": n_patches,
+            "inference_cell_sizes": cell_sizes,
             "inference_aggregate": aggregate,
             "uncertainty_band": uncertainty_band,
         }
@@ -478,7 +506,7 @@ class VitInferenceService:
             image,
             sizes=sizes,
             n_patches=pipeline.inference_n_patches,
-            min_cell_size=min(sizes),
+            min_cell_size=pipeline.inference_cell_sizes,
         )
         entries: List[Tuple[torch.Tensor, PatchSample]] = []
         for sample in patch_samples:

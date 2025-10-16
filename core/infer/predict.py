@@ -53,6 +53,7 @@ def run_inference(
     mode: str = "single",
     n_patches: int = 0,
     scales: Sequence[int] = (224, 336),
+    cell_sizes: Optional[Sequence[int]] = None,
     device: str = "cuda",
     uncertain_band: Tuple[float, float] = (0.45, 0.55),
 ) -> Dict[str, object]:
@@ -60,13 +61,15 @@ def run_inference(
 
     start = time.perf_counter()
     patch_count = 1
+    min_cell_values: Optional[Sequence[int]] = cell_sizes
     if mode == "multi":
-        min_cell_size = min(scales) if scales else 224
+        if min_cell_values is None:
+            min_cell_values = tuple(scales)
         patches = generate_patches(
             pil_image,
             sizes=scales,
             n_patches=n_patches,
-            min_cell_size=min_cell_size,
+            min_cell_size=min_cell_values,
         )
         patch_count = max(1, len(patches))
         patch_scores = infer_patches(model, patches, device=device)
@@ -96,6 +99,7 @@ def run_inference(
             "mode": mode,
             "n_patches": patch_count if mode == "multi" else 1,
             "scales": list(scales),
+            "cell_sizes": list(min_cell_values) if mode == "multi" and min_cell_values is not None else None,
             "latency_ms": float(latency),
         },
     }

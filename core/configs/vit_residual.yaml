@@ -63,7 +63,8 @@ augment:
     watermark_alpha: [0.1, 0.3]
 
 inference:
-  multiscale: [224, 336]
+  multiscale: [224, 336, 448, 576, 704]
+  cell_sizes: [256, 384, 512, 640, 768]
   n_patches: 0
   aggregate: mean
   uncertain_band: [0.45, 0.55]
