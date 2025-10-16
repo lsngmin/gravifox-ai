@@ -1,6 +1,7 @@
 """멀티패치·멀티스케일 추론 유틸리티와 간단한 ViT 멀티패치 모델."""
 
 from __future__ import annotations
+import math
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -109,8 +110,11 @@ def generate_patches(
     if w == 0 or h == 0:
         raise ValueError("이미지 크기가 0입니다.")
 
+    num_scales = max(1, len(sizes))
+    effective_cells = max(1, math.ceil(n_patches / num_scales))
+
     if grid_rows is None or grid_cols is None:
-        grid_rows, grid_cols = _suggest_grid(n_patches)
+        grid_rows, grid_cols = _suggest_grid(effective_cells)
     grid_rows = max(1, grid_rows)
     grid_cols = max(1, grid_cols)
 
@@ -122,12 +126,12 @@ def generate_patches(
     samples: List[PatchSample] = []
     patch_counter = 0
 
-    for row in range(grid_rows):
-        center_y = (row + 0.5) * step_y
-        for col in range(grid_cols):
-            center_x = (col + 0.5) * step_x
+    for scale_index, ratio in enumerate(ratios):
+        for row in range(grid_rows):
+            center_y = (row + 0.5) * step_y
+            for col in range(grid_cols):
+                center_x = (col + 0.5) * step_x
 
-            for scale_index, ratio in enumerate(ratios):
                 desired_edge = min(base_edge * ratio, max_edge)
                 if desired_edge < 1.0:
                     desired_edge = 1.0
