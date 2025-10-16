@@ -127,6 +127,15 @@ def generate_patches(
     else:
         grid_cols = max(grid_cols, coverage_cols)
 
+    total_required = grid_rows * grid_cols * num_scales
+    if n_patches and n_patches > 0 and n_patches < total_required:
+        logger.info(
+            "요청한 n_patches=%d 가 전체 커버리지(%d)를 만족하지 못해 조정합니다.",
+            n_patches,
+            total_required,
+        )
+        n_patches = total_required
+
     step_x = w / grid_cols
     step_y = h / grid_rows
     base_edge = max(1.0, min(step_x, step_y))
