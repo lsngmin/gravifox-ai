@@ -109,12 +109,20 @@ async def run_analysis(
                 "grid": inference_meta.get("grid"),
                 "heatmap": heatmap_meta,
                 "patches": inference_meta.get("patches"),
+                "priority_regions": inference_meta.get("priority_regions"),
+                "patch_stats": inference_meta.get("patch_stats"),
+                "uncertainty_band_adjusted": inference_meta.get("uncertainty_band_adjusted"),
+                "partial_suspected": inference_meta.get("partial_suspected"),
             },
             "params": params or {},
             "model": model or {},
         }
         if heatmap_score is not None:
             result_payload["heatmap_score"] = heatmap_score
+        if isinstance(inference_meta, dict) and inference_meta.get("uncertainty_band_adjusted"):
+            result_payload["uncertainty_band_adjusted"] = list(
+                inference_meta["uncertainty_band_adjusted"]
+            )
 
         LOGGER.info(
             "워커 추론 완료 - jobId=%s label=%s pAi=%.4f latencyMs=%.2f",
@@ -123,6 +131,16 @@ async def run_analysis(
             float(calibration.p_ai),
             latency_ms,
         )
+        if isinstance(inference_meta, dict):
+            patch_stats = inference_meta.get("patch_stats", {})
+            LOGGER.debug(
+                "패치 통계 - jobId=%s count=%s best_ai=%.3f weighted_ai=%.3f partial=%s",
+                job_id,
+                inference_meta.get("patch_count"),
+                float(patch_stats.get("best_ai", 0.0)),
+                float(patch_stats.get("weighted_ai", 0.0)),
+                str(inference_meta.get("partial_suspected", False)),
+            )
         LOGGER.info(
             "결과 이벤트 발행 준비 - jobId=%s routing_key=analyze.result.%s",
             job_id,

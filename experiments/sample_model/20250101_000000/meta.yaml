@@ -12,14 +12,16 @@ inference:
   multiscale:
     - 224
     - 336
-    - 448
-    - 576
-    - 704
+    - 512
   cell_sizes:
     - 256
     - 384
-    - 512
     - 640
-    - 768
   n_patches: 0
   aggregate: mean
+  patch_overlap: 0.25
+  patch_jitter: 0.1
+  max_patches: 24
+  uncertain_band:
+    - 0.45
+    - 0.55

@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import time
-from typing import Dict, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import torch
 from PIL import Image
 from torchvision import transforms
 
-from core.models.multipatch import aggregate_scores, generate_patches, infer_patches
+from core.models.multipatch import (
+    aggregate_scores,
+    compute_patch_weights,
+    estimate_priority_regions,
+    generate_patches,
+    infer_patches,
+)
 from core.models.registry import get_model
 from core.utils.logger import get_logger
 
@@ -56,24 +62,41 @@ def run_inference(
     cell_sizes: Optional[Sequence[int]] = None,
     device: str = "cuda",
     uncertain_band: Tuple[float, float] = (0.45, 0.55),
+    overlap: Union[float, Sequence[Optional[float]]] = 0.0,
+    jitter: Union[float, Sequence[Optional[float]]] = 0.0,
+    max_patches: Optional[int] = None,
+    priority_regions: Optional[Sequence[Tuple[float, float, float, float]]] = None,
 ) -> Dict[str, object]:
     """PIL 이미지를 받아 진위 여부를 추론한다."""
 
     start = time.perf_counter()
     patch_count = 1
     min_cell_values: Optional[Sequence[int]] = cell_sizes
+    computed_priority_regions: Optional[Sequence[Tuple[float, float, float, float]]] = None
+
     if mode == "multi":
         if min_cell_values is None:
             min_cell_values = tuple(scales)
+        computed_priority_regions = priority_regions
+        if computed_priority_regions is None:
+            computed_priority_regions = estimate_priority_regions(pil_image)
         patches = generate_patches(
             pil_image,
             sizes=scales,
             n_patches=n_patches,
             min_cell_size=min_cell_values,
+            overlap=overlap,
+            jitter=jitter,
+            max_patches=max_patches,
+            priority_regions=computed_priority_regions,
         )
         patch_count = max(1, len(patches))
         patch_scores = infer_patches(model, patches, device=device)
-        scores = aggregate_scores(patch_scores)
+        weights = compute_patch_weights(patches)
+        scores = aggregate_scores(
+            patch_scores,
+            weights=weights if weights else None,
+        )
     else:
         scores = _run_single(pil_image, model, device)
 
@@ -89,6 +112,31 @@ def run_inference(
         predicted = "Uncertain"
         confidence = max(ai_score, scores["real"])
 
+    if isinstance(overlap, (list, tuple)):
+        overlap_meta: Optional[object] = [
+            float(v) if v is not None else None for v in overlap
+        ]
+    else:
+        try:
+            overlap_meta = float(overlap) if overlap is not None else None
+        except (TypeError, ValueError):
+            overlap_meta = None
+
+    if isinstance(jitter, (list, tuple)):
+        jitter_meta: Optional[object] = [
+            float(v) if v is not None else None for v in jitter
+        ]
+    else:
+        try:
+            jitter_meta = float(jitter) if jitter is not None else None
+        except (TypeError, ValueError):
+            jitter_meta = None
+
+    try:
+        max_patches_meta = int(max_patches) if max_patches is not None else None
+    except (TypeError, ValueError):
+        max_patches_meta = None
+
     latency = (time.perf_counter() - start) * 1000.0
     result = {
         "class": predicted,
@@ -101,6 +149,17 @@ def run_inference(
             "scales": list(scales),
             "cell_sizes": list(min_cell_values) if mode == "multi" and min_cell_values is not None else None,
             "latency_ms": float(latency),
+            "overlap": overlap_meta,
+            "jitter": jitter_meta,
+            "max_patches": max_patches_meta,
+            "priority_regions": (
+                [
+                    [float(coord) for coord in region]
+                    for region in computed_priority_regions
+                ]
+                if computed_priority_regions
+                else None
+            ),
         },
     }
     logger.info(

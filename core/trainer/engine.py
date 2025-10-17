@@ -15,7 +15,12 @@ from torchvision import transforms as vision_transforms
 
 from core.utils.logger import get_logger, get_train_logger
 from core.utils.seed import set_seed as set_global_seed
-from core.models.multipatch import aggregate_scores, generate_patches
+from core.models.multipatch import (
+    aggregate_scores,
+    compute_patch_weights,
+    estimate_priority_regions,
+    generate_patches,
+)
 from .experiment_manager import ExperimentManager, MonitorConfig
 from .metrics import classification_metrics, top1_accuracy
 from .optim import create_optimizer
@@ -214,6 +219,10 @@ class Trainer:
         if aggregate not in {"mean", "max", "quality_weighted"}:
             aggregate = "mean"
 
+        overlap = cfg.get("patch_overlap") or cfg.get("overlap")
+        jitter = cfg.get("patch_jitter") or cfg.get("jitter")
+        max_patches = cfg.get("max_patches") or cfg.get("patch_limit")
+
         if self.inference_transform is None:
             raise ValueError(
                 "inference_transform must be provided to Trainer to match service inference pipeline."
@@ -223,13 +232,27 @@ class Trainer:
         self.inference_cell_sizes: Tuple[int, ...] = tuple(cell_sizes)
         self.inference_n_patches: int = max(0, n_patches)
         self.inference_aggregate: str = aggregate
+        self.inference_overlap = overlap
+        self.inference_jitter = jitter
+        try:
+            mp_value = int(max_patches) if max_patches not in (None, "", False) else None
+        except (TypeError, ValueError):
+            mp_value = None
+        if mp_value is not None and mp_value <= 0:
+            mp_value = None
+        self.inference_max_patches = mp_value
 
     def _evaluate_validation_image(self, image: Image.Image) -> Tuple[torch.Tensor, torch.Tensor]:
+        priority_regions = estimate_priority_regions(image)
         patch_samples = generate_patches(
             image,
             sizes=self.inference_scales,
             n_patches=self.inference_n_patches,
             min_cell_size=self.inference_cell_sizes,
+            overlap=self.inference_overlap,
+            jitter=self.inference_jitter,
+            max_patches=self.inference_max_patches,
+            priority_regions=priority_regions,
         )
         if not patch_samples:
             base_probs = torch.tensor([0.5, 0.5], device=self.accel.device, dtype=torch.float32)
@@ -252,7 +275,12 @@ class Trainer:
             {"real": float(prob[0]), "ai": float(prob[1])}
             for prob in probs_cpu
         ]
-        aggregated = aggregate_scores(patch_scores, method=self.inference_aggregate)
+        weights = compute_patch_weights(patch_samples)
+        aggregated = aggregate_scores(
+            patch_scores,
+            method=self.inference_aggregate,
+            weights=weights if weights else None,
+        )
         probs_tensor = torch.tensor(
             [aggregated["real"], aggregated["ai"]],
             device=self.accel.device,
@@ -351,11 +379,16 @@ class Trainer:
                         else:
                             raise TypeError("train_augment must return PIL.Image or Tensor")
 
+                    priority_regions = estimate_priority_regions(image)
                     patch_samples = generate_patches(
                         image,
                         sizes=self.inference_scales,
                         n_patches=self.inference_n_patches,
                         min_cell_size=self.inference_cell_sizes,
+                        overlap=self.inference_overlap,
+                        jitter=self.inference_jitter,
+                        max_patches=self.inference_max_patches,
+                        priority_regions=priority_regions,
                     )
                     if not patch_samples:
                         continue
@@ -401,7 +434,12 @@ class Trainer:
                     {"real": float(prob[0]), "ai": float(prob[1])}
                     for prob in patch_probs
                 ]
-                aggregated = aggregate_scores(patch_scores, method=self.inference_aggregate)
+                weights = compute_patch_weights(patch_samples)
+                aggregated = aggregate_scores(
+                    patch_scores,
+                    method=self.inference_aggregate,
+                    weights=weights if weights else None,
+                )
                 sample_ai_scores.append(float(aggregated["ai"]))
                 sample_real_scores.append(float(aggregated["real"]))
                 sample_targets.append(target_idx)

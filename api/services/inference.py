@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -19,7 +20,13 @@ from PIL import Image
 
 from core.datasets.base import load_dataset_config
 from core.datasets.transforms import build_val_transforms
-from core.models.multipatch import PatchSample, aggregate_scores, generate_patches
+from core.models.multipatch import (
+    PatchSample,
+    aggregate_scores,
+    compute_patch_weights,
+    generate_patches,
+    estimate_priority_regions,
+)
 from core.models.registry import get_model
 from core.utils.logger import get_logger, log_time
 
@@ -43,6 +50,9 @@ class VitPipeline:
     inference_n_patches: int
     inference_cell_sizes: Tuple[int, ...]
     inference_aggregate: str
+    inference_overlap: Any
+    inference_jitter: Any
+    inference_max_patches: Optional[int]
     uncertainty_band: Tuple[float, float]
 
 
@@ -98,19 +108,29 @@ class VitInferenceService:
             "scales": list(pipeline.inference_scales),
             "cell_sizes": list(pipeline.inference_cell_sizes),
             "aggregate": pipeline.inference_aggregate,
+            "overlap": pipeline.inference_overlap,
+            "jitter": pipeline.inference_jitter,
+            "max_patches": pipeline.inference_max_patches,
+            "uncertainty_band": list(pipeline.uncertainty_band),
         }
 
         rgb_image = image if image.mode == "RGB" else image.convert("RGB")
         use_multipatch = self._should_use_multipatch(pipeline)
 
+        priority_regions: Optional[List[Tuple[float, float, float, float]]] = None
+
         if use_multipatch:
-            patch_entries = self._prepare_multipatch_inputs(rgb_image, pipeline)
+            patch_entries, priority_regions = self._prepare_multipatch_inputs(
+                rgb_image, pipeline
+            )
             if len(patch_entries) <= 1:
                 use_multipatch = False
             else:
                 metadata["mode"] = "multi"
                 metadata["n_patches"] = len(patch_entries)
                 metadata["patch_count"] = len(patch_entries)
+                if priority_regions:
+                    metadata["priority_regions"] = priority_regions
                 self._logger.info(
                     "멀티패치 추론 시작 - patches=%d scales=%s aggregate=%s",
                     len(patch_entries),
@@ -121,16 +141,35 @@ class VitInferenceService:
                     self._batch_queue.enqueue(tensor) for tensor, _ in patch_entries
                 ]
                 patch_distributions = await asyncio.gather(*patch_futures)
-                aggregated, patch_scores = self._aggregate_patch_probs(
-                    patch_distributions, pipeline
+                (
+                    aggregated,
+                    patch_scores,
+                    weights,
+                    patch_stats,
+                ) = self._aggregate_patch_probs(
+                    patch_entries, patch_distributions, pipeline
                 )
                 patch_details = self._summarize_patch_outputs(
-                    patch_entries, patch_distributions, patch_scores
+                    patch_entries, patch_distributions, patch_scores, weights
                 )
                 if patch_details:
                     metadata["patches"] = patch_details
                     metadata["grid"] = self._infer_patch_grid(patch_details)
                     metadata["heatmap"] = self._build_heatmap(patch_details)
+                if patch_stats:
+                    metadata["patch_stats"] = patch_stats
+                    adjusted_band, partial_flag = self._adjust_uncertainty_band(
+                        pipeline, aggregated, patch_stats
+                    )
+                    metadata["uncertainty_band_adjusted"] = list(adjusted_band)
+                    metadata["partial_suspected"] = bool(partial_flag)
+                    self._logger.debug(
+                        "패치 통계 - count=%d best_ai=%.3f weighted_ai=%.3f partial=%s",
+                        len(patch_entries),
+                        patch_stats.get("best_ai", 0.0),
+                        patch_stats.get("weighted_ai", 0.0),
+                        str(partial_flag),
+                    )
                 real_idx = pipeline.real_index if pipeline.real_index < len(aggregated) else 0
                 ai_idx = 1 if real_idx == 0 else 0
                 real_score = float(aggregated[real_idx]) if 0 <= real_idx < len(aggregated) else float("nan")
@@ -146,6 +185,8 @@ class VitInferenceService:
         tensor = self._prepare_tensor(rgb_image, pipeline)
         metadata["mode"] = "single"
         metadata["patch_count"] = 1
+        if priority_regions:
+            metadata.setdefault("priority_regions", priority_regions)
         probs = await self._batch_queue.enqueue(tensor)
         return probs, metadata
 
@@ -438,6 +479,33 @@ class VitInferenceService:
         if not scales:
             scales = (224,)
 
+        overlap_cfg = raw_cfg.get("patch_overlap") or raw_cfg.get("overlap")
+        jitter_cfg = raw_cfg.get("patch_jitter") or raw_cfg.get("jitter")
+        max_patches_cfg = raw_cfg.get("max_patches") or raw_cfg.get("patch_limit")
+
+        def _normalize_scalar(value: Any) -> Any:
+            if isinstance(value, (list, tuple)):
+                return [
+                    float(item) if item is not None else None for item in value
+                ]
+            if value in (None, "", False):
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        overlap_value = _normalize_scalar(overlap_cfg)
+        jitter_value = _normalize_scalar(jitter_cfg)
+        try:
+            max_patches_value = (
+                int(max_patches_cfg) if max_patches_cfg not in (None, "", False) else None
+            )
+        except (TypeError, ValueError):
+            max_patches_value = None
+        if max_patches_value is not None and max_patches_value <= 0:
+            max_patches_value = None
+
         uncertainty_band = (
             float(self._settings.uncertainty_band_low),
             float(self._settings.uncertainty_band_high),
@@ -449,6 +517,9 @@ class VitInferenceService:
             "inference_n_patches": n_patches,
             "inference_cell_sizes": cell_sizes,
             "inference_aggregate": aggregate,
+            "inference_overlap": overlap_value,
+            "inference_jitter": jitter_value,
+            "inference_max_patches": max_patches_value,
             "uncertainty_band": uncertainty_band,
         }
 
@@ -498,15 +569,20 @@ class VitInferenceService:
 
     def _prepare_multipatch_inputs(
         self, image: Image.Image, pipeline: VitPipeline
-    ) -> List[Tuple[torch.Tensor, PatchSample]]:
+    ) -> Tuple[List[Tuple[torch.Tensor, PatchSample]], Optional[List[Tuple[float, float, float, float]]]]:
         """멀티패치 텐서와 메타데이터를 생성한다."""
 
         sizes: Sequence[int] = pipeline.inference_scales or (224,)
+        priority_regions = self._detect_priority_regions(image, pipeline)
         patch_samples = generate_patches(
             image,
             sizes=sizes,
             n_patches=pipeline.inference_n_patches,
             min_cell_size=pipeline.inference_cell_sizes,
+            overlap=pipeline.inference_overlap,
+            jitter=pipeline.inference_jitter,
+            max_patches=pipeline.inference_max_patches,
+            priority_regions=priority_regions,
         )
         entries: List[Tuple[torch.Tensor, PatchSample]] = []
         for sample in patch_samples:
@@ -517,12 +593,85 @@ class VitInferenceService:
             )
             tensor = pipeline.transform(rgb_patch).unsqueeze(0).contiguous()
             entries.append((tensor, sample))
-        return entries
+        return entries, priority_regions
+
+    def _detect_priority_regions(
+        self, image: Image.Image, pipeline: VitPipeline
+    ) -> Optional[List[Tuple[float, float, float, float]]]:
+        """간단한 복잡도 히트맵 기반 우선순위 영역을 추정한다."""
+
+        regions = estimate_priority_regions(image, max_regions=4)
+        if regions:
+            width, height = image.size
+            self._logger.debug(
+                "우선순위 영역 추정 - detected=%d width=%d height=%d",
+                len(regions),
+                width,
+                height,
+            )
+        return regions or None
+
+    def _adjust_uncertainty_band(
+        self,
+        pipeline: VitPipeline,
+        aggregated: Sequence[float],
+        stats: Dict[str, float],
+    ) -> Tuple[Tuple[float, float], bool]:
+        """패치 통계를 활용해 불확실 밴드를 미세 조정한다."""
+
+        low, high = pipeline.uncertainty_band
+        if not aggregated:
+            return (low, high), False
+
+        num_classes = len(aggregated)
+        real_idx = pipeline.real_index if pipeline.real_index < num_classes else 0
+        ai_idx = 1 if real_idx == 0 else 0
+        ai_prob = float(aggregated[ai_idx]) if ai_idx < num_classes else 1.0 - float(aggregated[real_idx])
+        real_prob = float(aggregated[real_idx]) if real_idx < num_classes else 1.0 - ai_prob
+
+        best_ai = float(stats.get("best_ai", 0.0))
+        best_real = float(stats.get("best_real", 0.0))
+        weighted_ai = float(stats.get("weighted_ai", 0.0))
+
+        adjusted_low, adjusted_high = float(low), float(high)
+        partial_flag = False
+
+        within_band = adjusted_low <= ai_prob <= adjusted_high
+        if within_band and best_ai >= 0.7:
+            delta = max(0.0, best_ai - ai_prob)
+            tighten = min(0.05, delta * 0.25)
+            adjusted_low = max(0.45, min(0.5, adjusted_low + tighten / 2.0))
+            adjusted_high = min(0.55, max(0.5, adjusted_high - tighten / 2.0))
+            partial_flag = True
+        elif within_band and best_real >= 0.7:
+            delta = max(0.0, best_real - real_prob)
+            tighten = min(0.05, delta * 0.25)
+            adjusted_low = max(0.45, min(0.5, adjusted_low + tighten / 2.0))
+            adjusted_high = min(0.55, max(0.5, adjusted_high - tighten / 2.0))
+            partial_flag = True
+        elif weighted_ai >= 0.6 and ai_prob < adjusted_low:
+            adjusted_low = max(0.45, adjusted_low - 0.01)
+            partial_flag = True
+
+        if adjusted_high < adjusted_low:
+            mid = (adjusted_low + adjusted_high) / 2.0
+            adjusted_low = mid - 0.01
+            adjusted_high = mid + 0.01
+
+        return (adjusted_low, adjusted_high), partial_flag
 
     def _aggregate_patch_probs(
-        self, patch_probs: Sequence[Sequence[float]], pipeline: VitPipeline
-    ) -> Tuple[List[float], List[Dict[str, float]]]:
-        """패치별 확률을 병합하고 개별 확률도 반환한다."""
+        self,
+        patch_entries: Sequence[Tuple[torch.Tensor, PatchSample]],
+        patch_probs: Sequence[Sequence[float]],
+        pipeline: VitPipeline,
+    ) -> Tuple[
+        List[float],
+        List[Dict[str, float]],
+        Optional[List[float]],
+        Dict[str, float],
+    ]:
+        """패치별 확률을 병합하고 가중치/통계를 반환한다."""
 
         if not patch_probs:
             raise ValueError("patch_probs is empty")
@@ -539,6 +688,12 @@ class VitInferenceService:
         ai_idx = 1 if real_idx == 0 else 0
 
         patch_scores = []
+        weights: Optional[List[float]] = None
+        patch_samples: Optional[List[PatchSample]] = None
+        try:
+            patch_samples = [sample for (_, sample) in patch_entries]
+        except Exception:
+            patch_samples = None
         for dist in patch_probs:
             if len(dist) != num_classes:
                 raise ValueError("inconsistent probability dimensions across patches")
@@ -549,8 +704,19 @@ class VitInferenceService:
                 p_ai = float(max(0.0, 1.0 - p_real))
             patch_scores.append({"ai": p_ai, "real": p_real})
 
+        scale_distribution: Dict[int, List[float]] = defaultdict(list) if patch_samples else {}
+        if patch_samples:
+            try:
+                weights = compute_patch_weights(patch_samples)
+            except Exception:
+                weights = None
+            for sample, score in zip(patch_samples, patch_scores):
+                scale_distribution[int(sample.scale)].append(score["ai"])
+
         aggregated = aggregate_scores(
-            patch_scores, method=pipeline.inference_aggregate or "mean"
+            patch_scores,
+            method=pipeline.inference_aggregate or "mean",
+            weights=weights,
         )
 
         if num_classes >= 2 and ai_idx < num_classes:
@@ -563,19 +729,36 @@ class VitInferenceService:
         total = sum(fused)
         if total > 0:
             fused = [float(value / total) for value in fused]
-        return fused, patch_scores
+        ai_values = [score["ai"] for score in patch_scores]
+        real_values = [score["real"] for score in patch_scores]
+        stats = {
+            "best_ai": float(max(ai_values) if ai_values else 0.0),
+            "best_real": float(max(real_values) if real_values else 0.0),
+            "mean_ai": float(sum(ai_values) / len(ai_values)) if ai_values else 0.0,
+            "mean_real": float(sum(real_values) / len(real_values)) if real_values else 0.0,
+            "weighted_ai": float(
+                sum(w * s for w, s in zip(weights, ai_values)) if weights else 0.0
+            ),
+        }
+        if scale_distribution:
+            stats["scale_ai_mean"] = {
+                int(scale): float(sum(values) / len(values)) if values else 0.0
+                for scale, values in scale_distribution.items()
+            }
+        return fused, patch_scores, weights, stats
 
     def _summarize_patch_outputs(
         self,
         patch_entries: Sequence[Tuple[torch.Tensor, PatchSample]],
         patch_distributions: Sequence[Sequence[float]],
         patch_scores: Sequence[Dict[str, float]],
+        weights: Optional[Sequence[float]] = None,
     ) -> List[Dict[str, Any]]:
         """패치 추론 결과를 프론트엔드가 활용할 수 있는 형태로 정리한다."""
 
         summaries: List[Dict[str, Any]] = []
-        for (_, sample), distribution, score in zip(
-            patch_entries, patch_distributions, patch_scores
+        for idx, ((_, sample), distribution, score) in enumerate(
+            zip(patch_entries, patch_distributions, patch_scores)
         ):
             bbox = {
                 "x1": float(sample.bbox[0]),
@@ -590,6 +773,10 @@ class VitInferenceService:
                 "scale_index": int(sample.scale_index),
                 "bbox": bbox,
                 "grid": grid,
+                "priority": bool(sample.priority),
+                "complexity": float(sample.complexity),
+                "source": str(sample.source),
+                "weight": float(weights[idx]) if weights and idx < len(weights) else None,
                 "scores": {
                     "ai": float(score["ai"]),
                     "real": float(score["real"]),
@@ -608,8 +795,21 @@ class VitInferenceService:
         if not patch_details:
             return {"rows": 0, "cols": 0}
 
-        max_row = max(detail.get("grid", {}).get("row", 0) for detail in patch_details)
-        max_col = max(detail.get("grid", {}).get("col", 0) for detail in patch_details)
+        rows = [
+            int(detail.get("grid", {}).get("row", -1))
+            for detail in patch_details
+            if int(detail.get("grid", {}).get("row", -1)) >= 0
+        ]
+        cols = [
+            int(detail.get("grid", {}).get("col", -1))
+            for detail in patch_details
+            if int(detail.get("grid", {}).get("col", -1)) >= 0
+        ]
+        if not rows or not cols:
+            return {"rows": 0, "cols": 0}
+
+        max_row = max(rows)
+        max_col = max(cols)
         return {"rows": int(max_row) + 1, "cols": int(max_col) + 1}
 
     @staticmethod
@@ -619,11 +819,20 @@ class VitInferenceService:
         if not patch_details:
             return {"rows": 0, "cols": 0, "cells": []}
 
-        rows = max(detail["grid"]["row"] for detail in patch_details) + 1
-        cols = max(detail["grid"]["col"] for detail in patch_details) + 1
+        valid_details = [
+            detail
+            for detail in patch_details
+            if int(detail.get("grid", {}).get("row", -1)) >= 0
+            and int(detail.get("grid", {}).get("col", -1)) >= 0
+        ]
+        if not valid_details:
+            return {"rows": 0, "cols": 0, "cells": []}
+
+        rows = max(detail["grid"]["row"] for detail in valid_details) + 1
+        cols = max(detail["grid"]["col"] for detail in valid_details) + 1
 
         cells: Dict[Tuple[int, int], Dict[str, Any]] = {}
-        for detail in patch_details:
+        for detail in valid_details:
             row = int(detail["grid"]["row"])
             col = int(detail["grid"]["col"])
             key = (row, col)
