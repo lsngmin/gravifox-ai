@@ -388,7 +388,10 @@ class Trainer:
                         image = None
                         patch_samples = None
                     else:
-                        image, target = sample  # type: ignore[assignment]
+                        if not isinstance(sample, (tuple, list)) or len(sample) < 2:
+                            raise TypeError(f"Unexpected training sample structure: {type(sample)}")
+                        image = sample[0]  # type: ignore[assignment]
+                        target = sample[1]
                         if isinstance(image, torch.Tensor):
                             image = self._to_pil(image.cpu())
                         elif not isinstance(image, Image.Image):
