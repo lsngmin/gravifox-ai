@@ -61,13 +61,13 @@ class ResidualBranchExtractor(nn.Module):
         self.cnn = nn.Sequential(
             nn.Conv2d(cfg.input_channels, 32, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(32),
-            nn.ReLU(),
+            nn.ReLU(inplace=False),
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
-            nn.ReLU(),
+            nn.ReLU(inplace=False),
             nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(64),
-            nn.ReLU(),
+            nn.ReLU(inplace=False),
             nn.AdaptiveAvgPool2d((1, 1)),
         )
         self.proj = nn.Linear(64, cfg.embed_dim)
@@ -114,7 +114,7 @@ class ResidualCNN(nn.Module):
         super().__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
+            nn.ReLU(inplace=False),
             nn.Conv2d(32, embed_dim, kernel_size=3, stride=1, padding=1),
         )
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
