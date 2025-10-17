@@ -134,6 +134,10 @@ class Trainer:
             gradient_accumulation_steps=cfg.grad_accum_steps,
         )
         try:
+            setattr(self.accel, "even_batches", False)
+        except Exception:
+            pass
+        try:
             gpu_cnt = torch.cuda.device_count()
         except Exception:
             gpu_cnt = 0
