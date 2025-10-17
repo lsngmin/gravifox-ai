@@ -17,7 +17,11 @@ from core.utils.logger import get_logger
 from .base import DatasetConfig, load_dataset_config
 from .sns_augment import build_sns_augment
 from .transforms import build_train_transforms, build_val_transforms
-from core.models.multipatch import generate_patches, estimate_priority_regions
+from core.models.multipatch import (
+    generate_patches,
+    estimate_priority_regions,
+    compute_patch_weights,
+)
 
 logger = get_logger(__name__)
 _DEBUG_WORKERS = os.environ.get("TVB_DATALOADER_DEBUG_WORKERS")
@@ -47,7 +51,9 @@ class MultipatchDataset(torch.utils.data.Dataset):
         if isinstance(image, Image.Image):
             return image
         if isinstance(image, torch.Tensor):
-            return self._to_pil(image)
+            if image.dim() == 4:
+                image = image[0]
+            return self._to_pil(image.cpu())
         raise TypeError(f"Unsupported image type for multipatch dataset: {type(image)}")
 
     def __getitem__(self, index: int):
@@ -78,12 +84,15 @@ class MultipatchDataset(torch.utils.data.Dataset):
         if not patch_samples:
             tensor = self.patch_transform(image if image.mode == "RGB" else image.convert("RGB"))
             return tensor.unsqueeze(0), [
-                {"scale_index": 0, "priority": True, "complexity": 0.0}
+                {"scale_index": 0, "priority": True, "complexity": 0.0, "weight": 1.0}
             ], target
 
         patch_tensors: List[torch.Tensor] = []
         metadata: List[Dict[str, Any]] = []
-        for sample in patch_samples:
+        weights = compute_patch_weights(patch_samples)
+        if not weights:
+            weights = [1.0 for _ in patch_samples]
+        for idx, sample in enumerate(patch_samples):
             patch_img = sample.image if sample.image.mode == "RGB" else sample.image.convert("RGB")
             tensor = self.patch_transform(patch_img)
             patch_tensors.append(tensor)
@@ -92,6 +101,7 @@ class MultipatchDataset(torch.utils.data.Dataset):
                     "scale_index": int(sample.scale_index),
                     "priority": bool(sample.priority),
                     "complexity": float(sample.complexity),
+                    "weight": float(weights[idx] if idx < len(weights) else 1.0),
                 }
             )
 

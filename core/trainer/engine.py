@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Optional, Sequence, Tuple, List
+from typing import Callable, Dict, Optional, Sequence, Tuple, List, Any
 from types import SimpleNamespace
 
 import math
@@ -415,17 +415,20 @@ class Trainer:
                             elif len(sample) == 2 and isinstance(sample[1], (list, tuple)):
                                 metadata_seq = sample[1]
                         if isinstance(metadata_seq, (list, tuple)):
-                            weight_infos = [
-                                SimpleNamespace(
-                                    priority=bool(meta.get("priority", False)),
-                                    complexity=float(meta.get("complexity", 0.0)),
-                                    scale_index=int(meta.get("scale_index", 0)),
-                                )
-                                for meta in metadata_seq
-                                if isinstance(meta, dict)
-                            ]
-                            if weight_infos:
-                                weights = compute_patch_weights(weight_infos)
+                            dict_seq = [meta for meta in metadata_seq if isinstance(meta, dict)]
+                            if dict_seq and all("weight" in meta for meta in dict_seq):
+                                weights = [float(meta.get("weight", 1.0)) for meta in dict_seq]
+                            else:
+                                weight_infos = [
+                                    SimpleNamespace(
+                                        priority=bool(meta.get("priority", False)),
+                                        complexity=float(meta.get("complexity", 0.0)),
+                                        scale_index=int(meta.get("scale_index", 0)),
+                                    )
+                                    for meta in dict_seq
+                                ]
+                                if weight_infos:
+                                    weights = compute_patch_weights(weight_infos)
                         patch_samples = None
                     else:
                         if isinstance(sample, (tuple, list)) and sample:
