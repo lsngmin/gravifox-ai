@@ -348,7 +348,6 @@ class Trainer:
         sampler = getattr(self.train_loader, "sampler", None)
         if hasattr(sampler, "set_epoch"):
             sampler.set_epoch(epoch)
-
         self.model.train()
         total_loss = 0.0
         total_acc = 0.0
@@ -409,7 +408,7 @@ class Trainer:
                 )
 
                 patch_count = patch_tensor.size(0)
-                chunk_losses: List[torch.Tensor] = []
+                patch_loss_accum: Optional[torch.Tensor] = None
                 logits_cpu_chunks: List[torch.Tensor] = []
                 offset = 0
                 for chunk in torch.split(patch_tensor, self.patch_chunk_size):
@@ -418,13 +417,16 @@ class Trainer:
                     with self.accel.autocast():
                         chunk_logits = self.model(chunk)
                         chunk_loss = self.criterion(chunk_logits, chunk_targets)
-                    weight = float(chunk.size(0))
-                    chunk_losses.append(chunk_loss * weight)
+                    weight = float(chunk.size(0)) / float(patch_count)
+                    weighted_chunk_loss = chunk_loss * weight
+                    if patch_loss_accum is None:
+                        patch_loss_accum = weighted_chunk_loss
+                    else:
+                        patch_loss_accum = patch_loss_accum + weighted_chunk_loss
                     logits_cpu_chunks.append(chunk_logits.detach().cpu())
-                if not chunk_losses:
+                if patch_loss_accum is None:
                     continue
-                patch_loss = torch.stack(chunk_losses).sum() / float(patch_count)
-                sample_losses.append(patch_loss)
+                sample_losses.append(patch_loss_accum)
 
                 patch_probs = torch.softmax(torch.cat(logits_cpu_chunks, dim=0), dim=1)
                 patch_scores = [
