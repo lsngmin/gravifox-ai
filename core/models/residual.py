@@ -60,13 +60,13 @@ class ResidualBranchExtractor(nn.Module):
         self.high_pass = HighPassFilter(cfg.input_channels)
         self.cnn = nn.Sequential(
             nn.Conv2d(cfg.input_channels, 32, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(32),
+            nn.GroupNorm(num_groups=8, num_channels=32),
             nn.ReLU(inplace=False),
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(64),
+            nn.GroupNorm(num_groups=16, num_channels=64),
             nn.ReLU(inplace=False),
             nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(64),
+            nn.GroupNorm(num_groups=16, num_channels=64),
             nn.ReLU(inplace=False),
             nn.AdaptiveAvgPool2d((1, 1)),
         )
