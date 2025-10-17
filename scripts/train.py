@@ -57,6 +57,7 @@ def _build_train_cfg(cfg: DictConfig) -> TrainCfg:
         criterion=trainer_cfg.get("criterion", "ce"),
         label_smoothing=float(trainer_cfg.get("label_smoothing", 0.0) or 0.0),
         max_grad_norm=float(trainer_cfg.get("max_grad_norm", 1.0) or 0.0),
+        patch_chunk_size=int(trainer_cfg.get("patch_chunk_size", 8) or 8),
         partial_epochs=trainer_cfg.get("partial_epochs"),
         full_epochs=trainer_cfg.get("full_epochs"),
         partial_steps=trainer_cfg.get("partial_steps"),

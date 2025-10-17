@@ -240,7 +240,7 @@ def generate_patches(
                 patch_counter += 1
 
                 if n_patches and n_patches > 0 and len(samples) >= n_patches:
-                    logger.info(
+                    logger.debug(
                         "격자 기반 멀티패치 생성 (제한 적용) - 생성=%d 제한=%d 스케일=%s",
                         len(samples),
                         n_patches,
@@ -248,7 +248,7 @@ def generate_patches(
                     )
                     return samples[:n_patches]
 
-    logger.info(
+    logger.debug(
         "격자 기반 멀티패치 생성 - 총 %d개, 스케일=%s",
         len(samples),
         list(sizes),
@@ -340,5 +340,5 @@ def aggregate_scores(scores: Sequence[dict], method: str = "mean") -> dict:
         real = real_scores.mean().item()
     total = ai + real + 1e-8
     aggregated = {"ai": ai / total, "real": real / total}
-    logger.info("패치 점수 집계 - method=%s, ai=%.4f, real=%.4f", method, aggregated["ai"], aggregated["real"])
+    logger.debug("패치 점수 집계 - method=%s, ai=%.4f, real=%.4f", method, aggregated["ai"], aggregated["real"])
     return aggregated

@@ -42,6 +42,7 @@ class TrainCfg:
     criterion: str = "ce"
     label_smoothing: float = 0.0
     max_grad_norm: float = 1.0
+    patch_chunk_size: int = 8
     partial_epochs: Optional[int] = None
     full_epochs: Optional[int] = None
     partial_steps: Optional[int] = None
@@ -101,6 +102,7 @@ class Trainer:
         self.train_augment = train_augment
         self._to_pil = vision_transforms.ToPILImage()
         self._init_inference_settings()
+        self.patch_chunk_size = max(1, int(cfg.patch_chunk_size or 8))
 
         monitor = MonitorConfig(key=cfg.ckpt_monitor, mode=cfg.ckpt_mode)
         self.experiment = experiment or ExperimentManager(Path(out_dir), monitor=monitor)
@@ -364,30 +366,47 @@ class Trainer:
                         tensor = self.inference_transform(patch_img).unsqueeze(0)
                         tensors.append(tensor)
 
-                    patch_tensor = torch.cat(tensors, dim=0).to(self.accel.device)
-                    target_idx = int(target) if not isinstance(target, torch.Tensor) else int(target.item())
-                    patch_targets = torch.full(
-                        (patch_tensor.size(0),),
-                        target_idx,
-                        device=self.accel.device,
-                        dtype=torch.long,
-                    )
+                patch_tensor = torch.cat(tensors, dim=0).to(self.accel.device)
+                target_idx = int(target) if not isinstance(target, torch.Tensor) else int(target.item())
+                patch_targets = torch.full(
+                    (patch_tensor.size(0),),
+                    target_idx,
+                    device=self.accel.device,
+                    dtype=torch.long,
+                )
 
+                patch_count = patch_tensor.size(0)
+                loss_accum: Optional[torch.Tensor] = None
+                logits_cpu_chunks: List[torch.Tensor] = []
+                offset = 0
+                for chunk in torch.split(patch_tensor, self.patch_chunk_size):
+                    chunk_targets = patch_targets[offset : offset + chunk.size(0)]
+                    offset += chunk.size(0)
                     with self.accel.autocast():
-                        patch_logits = self.model(patch_tensor)
-                        patch_loss = self.criterion(patch_logits, patch_targets)
+                        chunk_logits = self.model(chunk)
+                        chunk_loss = self.criterion(chunk_logits, chunk_targets)
+                    weight = chunk.size(0)
+                    if loss_accum is None:
+                        loss_accum = chunk_loss * weight
+                    else:
+                        loss_accum = loss_accum + chunk_loss * weight
+                    logits_cpu_chunks.append(chunk_logits.detach().cpu())
+                if loss_accum is None:
+                    continue
+                patch_loss = loss_accum / patch_count
+                sample_losses.append(patch_loss)
 
-                    sample_losses.append(patch_loss)
-
-                    patch_probs = torch.softmax(patch_logits.detach(), dim=1).cpu()
-                    patch_scores = [
-                        {"real": float(prob[0]), "ai": float(prob[1])}
-                        for prob in patch_probs
-                    ]
-                    aggregated = aggregate_scores(patch_scores, method=self.inference_aggregate)
-                    sample_ai_scores.append(float(aggregated["ai"]))
-                    sample_real_scores.append(float(aggregated["real"]))
-                    sample_targets.append(target_idx)
+                patch_probs = torch.softmax(torch.cat(logits_cpu_chunks, dim=0), dim=1)
+                patch_scores = [
+                    {"real": float(prob[0]), "ai": float(prob[1])}
+                    for prob in patch_probs
+                ]
+                aggregated = aggregate_scores(patch_scores, method=self.inference_aggregate)
+                sample_ai_scores.append(float(aggregated["ai"]))
+                sample_real_scores.append(float(aggregated["real"]))
+                sample_targets.append(target_idx)
+                del patch_tensor
+                del patch_targets
 
                 if not sample_losses:
                     continue

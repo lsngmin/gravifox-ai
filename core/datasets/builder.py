@@ -289,11 +289,13 @@ def build_dataloaders(
             shuffle=shuffle_train,
             seed=seed if seed is not None else 0,
         )
+        params = dict(train_loader_params)
+        params.update(train_loader_kwargs)
         train_loader = DataLoader(
             train_dataset,
             sampler=sampler,
             drop_last=dataset_cfg.loader.drop_last,
-            **train_loader_params,
+            **params,
         )
     elif use_sampler:
         sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
@@ -350,18 +352,22 @@ def build_dataloaders(
                     rank=rank,
                     shuffle=False,
                 )
+            params = dict(val_loader_params)
+            params.update(val_loader_kwargs)
             val_loader = DataLoader(
                 val_dataset,
                 sampler=val_sampler,
                 drop_last=False,
-                **val_loader_params,
+                **params,
             )
         else:
+            params = dict(val_loader_params)
+            params.update(val_loader_kwargs)
             val_loader = DataLoader(
                 val_dataset,
                 shuffle=False,
                 drop_last=False,
-                **val_loader_params,
+                **params,
             )
 
     train_size = len(train_dataset)
