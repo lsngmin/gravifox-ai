@@ -438,6 +438,10 @@ def build_dataloaders(
 
     if return_raw_val_images:
         val_loader_params["collate_fn"] = _identity_collate
+    train_drop_last = dataset_cfg.loader.drop_last
+    if return_raw_train_images or precompute_patches:
+        train_drop_last = False
+
     if distributed:
         sampler = DistributedSampler(
             train_dataset,
@@ -451,7 +455,7 @@ def build_dataloaders(
         train_loader = DataLoader(
             train_dataset,
             sampler=sampler,
-            drop_last=dataset_cfg.loader.drop_last,
+            drop_last=train_drop_last,
             **params,
         )
     elif use_sampler:
@@ -461,7 +465,7 @@ def build_dataloaders(
         train_loader = DataLoader(
             train_dataset,
             sampler=sampler,
-            drop_last=dataset_cfg.loader.drop_last,
+            drop_last=train_drop_last,
             **params,
         )
     else:
@@ -470,7 +474,7 @@ def build_dataloaders(
         train_loader = DataLoader(
             train_dataset,
             shuffle=shuffle_train,
-            drop_last=dataset_cfg.loader.drop_last,
+            drop_last=train_drop_last,
             **params,
         )
 
