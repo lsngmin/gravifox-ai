@@ -49,8 +49,8 @@ dataset:
   data_root: /home/smin/datasets/genimage
   source: imagenet_ai_0508_adm
   loader:
-    batch_size: 512
-    num_workers: 12
+    batch_size: 256
+    num_workers: 18
 
 augment:
   sns:
