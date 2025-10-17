@@ -273,6 +273,14 @@ def build_dataloaders(
     distributed = world_size > 1
     sampler = None
     use_sampler = sample_weights.numel() > 0 and not distributed
+
+    train_loader_params = dict(loader_kwargs)
+    if return_raw_train_images:
+        train_loader_params["collate_fn"] = _identity_collate
+
+    val_loader_params = dict(val_loader_kwargs)
+    if return_raw_val_images:
+        val_loader_params["collate_fn"] = _identity_collate
     if distributed:
         sampler = DistributedSampler(
             train_dataset,
@@ -285,22 +293,26 @@ def build_dataloaders(
             train_dataset,
             sampler=sampler,
             drop_last=dataset_cfg.loader.drop_last,
-            **loader_kwargs,
+            **train_loader_params,
         )
     elif use_sampler:
         sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+        params = dict(train_loader_params)
+        params.update(train_loader_kwargs)
         train_loader = DataLoader(
             train_dataset,
             sampler=sampler,
             drop_last=dataset_cfg.loader.drop_last,
-            **train_loader_kwargs,
+            **params,
         )
     else:
+        params = dict(train_loader_params)
+        params.update(train_loader_kwargs)
         train_loader = DataLoader(
             train_dataset,
             shuffle=shuffle_train,
             drop_last=dataset_cfg.loader.drop_last,
-            **train_loader_kwargs,
+            **params,
         )
 
     val_loader: Optional[DataLoader] = None
@@ -342,14 +354,14 @@ def build_dataloaders(
                 val_dataset,
                 sampler=val_sampler,
                 drop_last=False,
-                **val_loader_kwargs,
+                **val_loader_params,
             )
         else:
             val_loader = DataLoader(
                 val_dataset,
                 shuffle=False,
                 drop_last=False,
-                **val_loader_kwargs,
+                **val_loader_params,
             )
 
     train_size = len(train_dataset)
