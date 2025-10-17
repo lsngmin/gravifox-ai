@@ -10,7 +10,7 @@ defaults:
 seed: 1337
 
 model:
-  name: vit_residual_fusion
+  name: vit_residual_fusion_multis
   params:
     vit_name: vit_base_patch16_224
     num_classes: 2
@@ -34,7 +34,7 @@ trainer:
   label_smoothing: 0.05
   log_interval: 50
   criterion: ce
-  patch_chunk_size: 256
+  patch_chunk_size: 320
   partial_steps: -1
   early_stopping:
     enabled: true
