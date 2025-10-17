@@ -332,9 +332,11 @@ def build_dataloaders(
     if return_raw_val_images:
         val_tf = None
         val_loader_kwargs["collate_fn"] = _identity_collate
+        val_loader_params["collate_fn"] = _identity_collate
     if return_raw_train_images:
         train_tf = None
         train_loader_kwargs["collate_fn"] = _identity_collate
+        train_loader_params["collate_fn"] = _identity_collate
 
     sources = _resolve_sources(dataset_cfg)
     train_datasets = []
@@ -514,14 +516,14 @@ def build_dataloaders(
                     rank=rank,
                     shuffle=False,
                 )
-            params = dict(val_loader_params)
-            params.update(val_loader_kwargs)
-            val_loader = DataLoader(
-                val_dataset,
-                sampler=val_sampler,
-                drop_last=False,
-                **params,
-            )
+        params = dict(val_loader_params)
+        params.update(val_loader_kwargs)
+        val_loader = DataLoader(
+            val_dataset,
+            sampler=val_sampler,
+            drop_last=False,
+            **params,
+        )
         else:
             logger.warning("유효한 검증 데이터를 찾을 수 없어 val_loader를 생성하지 않습니다.")
             params = dict(val_loader_params)
