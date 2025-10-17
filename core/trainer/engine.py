@@ -392,6 +392,28 @@ class Trainer:
                             raise TypeError(f"Unexpected training sample structure: {type(sample)}")
                         image = sample[0]  # type: ignore[assignment]
                         target = sample[1]
+                        if isinstance(image, torch.Tensor) and image.dim() == 4:
+                            patch_tensor = image.to(self.accel.device)
+                            patch_count = patch_tensor.size(0)
+                            patch_targets = torch.full(
+                                (patch_count,),
+                                int(target) if not isinstance(target, torch.Tensor) else int(target.item()),
+                                device=self.accel.device,
+                                dtype=torch.long,
+                            )
+                            metadata = sample[1] if len(sample) > 2 else []
+                            weight_infos = []
+                            for meta in metadata:
+                                weight_infos.append(
+                                    SimpleNamespace(
+                                        priority=bool(meta.get("priority", False)),
+                                        complexity=float(meta.get("complexity", 0.0)),
+                                        scale_index=int(meta.get("scale_index", 0)),
+                                    )
+                                )
+                            weights = compute_patch_weights(weight_infos) if weight_infos else []
+                            patch_samples = None
+                            break
                         if isinstance(image, torch.Tensor):
                             image = self._to_pil(image.cpu())
                         elif not isinstance(image, Image.Image):
@@ -440,27 +462,15 @@ class Trainer:
                         patch_tensor_stack = torch.cat(tensors, dim=0)
 
                     target_idx = int(target) if not isinstance(target, torch.Tensor) else int(target.item())
-                    patch_tensor = patch_tensor_stack.to(self.accel.device)
-                    patch_count = patch_tensor.size(0)
-                    patch_targets = torch.full(
-                        (patch_count,),
-                        target_idx,
-                        device=self.accel.device,
-                        dtype=torch.long,
-                    )
-
-                    if precomputed:
-                        meta_list = patch_metadata or []
-                        weight_infos = [
-                            SimpleNamespace(
-                                priority=bool(meta.get("priority", False)),
-                                complexity=float(meta.get("complexity", 0.0)),
-                                scale_index=int(meta.get("scale_index", 0)),
-                            )
-                            for meta in meta_list
-                        ]
-                        weights = compute_patch_weights(weight_infos) if weight_infos else []
-                    else:
+                    if not precomputed:
+                        patch_tensor = patch_tensor_stack.to(self.accel.device)
+                        patch_count = patch_tensor.size(0)
+                        patch_targets = torch.full(
+                            (patch_count,),
+                            target_idx,
+                            device=self.accel.device,
+                            dtype=torch.long,
+                        )
                         weights = compute_patch_weights(patch_samples) if patch_samples else []
 
                     if not weights:
