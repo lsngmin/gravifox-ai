@@ -391,29 +391,37 @@ class Trainer:
                         if not isinstance(sample, (tuple, list)) or len(sample) < 2:
                             raise TypeError(f"Unexpected training sample structure: {type(sample)}")
                         image = sample[0]  # type: ignore[assignment]
-                        target = sample[1]
+                        metadata = sample[1] if len(sample) > 2 else None
+                        target = sample[2] if len(sample) > 2 else sample[1]
+                        if isinstance(target, (list, tuple)):
+                            target = target[0]
+                        if isinstance(target, torch.Tensor):
+                            target = int(target.item())
+                        else:
+                            target = int(target)
                         if isinstance(image, torch.Tensor) and image.dim() == 4:
                             patch_tensor = image.to(self.accel.device)
                             patch_count = patch_tensor.size(0)
                             patch_targets = torch.full(
                                 (patch_count,),
-                                int(target) if not isinstance(target, torch.Tensor) else int(target.item()),
+                                target,
                                 device=self.accel.device,
                                 dtype=torch.long,
                             )
-                            metadata = sample[1] if len(sample) > 2 else []
-                            weight_infos = []
-                            for meta in metadata:
-                                weight_infos.append(
-                                    SimpleNamespace(
-                                        priority=bool(meta.get("priority", False)),
-                                        complexity=float(meta.get("complexity", 0.0)),
-                                        scale_index=int(meta.get("scale_index", 0)),
-                                    )
+                            metadata_list = metadata if isinstance(metadata, (list, tuple)) else []
+                            weight_infos = [
+                                SimpleNamespace(
+                                    priority=bool(meta.get("priority", False)),
+                                    complexity=float(meta.get("complexity", 0.0)),
+                                    scale_index=int(meta.get("scale_index", 0)),
                                 )
+                                for meta in metadata_list
+                            ]
                             weights = compute_patch_weights(weight_infos) if weight_infos else []
                             patch_samples = None
-                            break
+                            precomputed = True
+                        else:
+                            precomputed = False
                         if isinstance(image, torch.Tensor):
                             image = self._to_pil(image.cpu())
                         elif not isinstance(image, Image.Image):
