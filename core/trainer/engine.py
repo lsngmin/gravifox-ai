@@ -376,54 +376,72 @@ class Trainer:
 
             with self.accel.accumulate(self.model):
                 for sample in batch:
-                    precomputed = (
-                        isinstance(sample, tuple)
-                        and len(sample) == 3
-                        and isinstance(sample[0], torch.Tensor)
-                        and sample[0].dim() == 4
-                    )
+                    if sample is None:
+                        continue
 
-                    if precomputed:
-                        patch_tensor_stack, patch_metadata, target = sample  # type: ignore[assignment]
-                        image = None
-                        patch_samples = None
-                    else:
-                        if not isinstance(sample, (tuple, list)) or len(sample) < 2:
-                            raise TypeError(f"Unexpected training sample structure: {type(sample)}")
-                        image = sample[0]  # type: ignore[assignment]
-                        metadata = sample[1] if len(sample) > 2 else None
-                        target = sample[2] if len(sample) > 2 else sample[1]
-                        if isinstance(target, (list, tuple)):
-                            target = target[0]
-                        if isinstance(target, torch.Tensor):
-                            target = int(target.item())
-                        else:
-                            target = int(target)
-                        if isinstance(image, torch.Tensor) and image.dim() == 4:
-                            patch_tensor = image.to(self.accel.device)
-                            patch_count = patch_tensor.size(0)
-                            patch_targets = torch.full(
-                                (patch_count,),
-                                target,
-                                device=self.accel.device,
-                                dtype=torch.long,
-                            )
-                            metadata_list = metadata if isinstance(metadata, (list, tuple)) else []
+                    def _normalize_target(value: Any) -> int:
+                        if isinstance(value, (list, tuple)) and value:
+                            return _normalize_target(value[0])
+                        if isinstance(value, torch.Tensor):
+                            if value.ndim == 0:
+                                return int(value.item())
+                            return int(value.view(-1)[0].item())
+                        try:
+                            return int(value)
+                        except Exception:
+                            raise TypeError(f"Unsupported target type: {type(value)}")
+
+                    patch_tensor: Optional[torch.Tensor] = None
+                    patch_targets: Optional[torch.Tensor] = None
+                    patch_samples: Optional[List[PatchSample]] = None
+                    weights: List[float] = []
+
+                    maybe_tensor = sample[0] if isinstance(sample, (tuple, list)) and sample else sample
+                    if isinstance(maybe_tensor, torch.Tensor) and maybe_tensor.dim() == 4:
+                        patch_tensor = maybe_tensor.to(self.accel.device)
+                        patch_count = patch_tensor.size(0)
+                        target_obj = sample[-1] if isinstance(sample, (tuple, list)) and len(sample) > 1 else 0
+                        target_idx = _normalize_target(target_obj)
+                        patch_targets = torch.full(
+                            (patch_count,),
+                            target_idx,
+                            device=self.accel.device,
+                            dtype=torch.long,
+                        )
+                        metadata_seq = None
+                        if isinstance(sample, (tuple, list)):
+                            if len(sample) >= 3:
+                                metadata_seq = sample[1]
+                            elif len(sample) == 2 and isinstance(sample[1], (list, tuple)):
+                                metadata_seq = sample[1]
+                        if isinstance(metadata_seq, (list, tuple)):
                             weight_infos = [
                                 SimpleNamespace(
                                     priority=bool(meta.get("priority", False)),
                                     complexity=float(meta.get("complexity", 0.0)),
                                     scale_index=int(meta.get("scale_index", 0)),
                                 )
-                                for meta in metadata_list
+                                for meta in metadata_seq
+                                if isinstance(meta, dict)
                             ]
-                            weights = compute_patch_weights(weight_infos) if weight_infos else []
-                            patch_samples = None
-                            precomputed = True
+                            if weight_infos:
+                                weights = compute_patch_weights(weight_infos)
+                        patch_samples = None
+                    else:
+                        if isinstance(sample, (tuple, list)) and sample:
+                            image = sample[0]
+                            target_idx = _normalize_target(sample[1] if len(sample) > 1 else 0)
                         else:
-                            precomputed = False
+                            image = sample
+                            target_idx = 0
+
                         if isinstance(image, torch.Tensor):
-                            image = self._to_pil(image.cpu())
+                            if image.dim() == 3:
+                                image = self._to_pil(image.cpu())
+                            elif image.dim() == 4:
+                                image = self._to_pil(image[0].cpu())
+                            else:
+                                raise ValueError(f"Unsupported tensor shape for image: {image.shape}")
                         elif not isinstance(image, Image.Image):
                             raise TypeError(f"Unsupported training sample type: {type(image)}")
 
@@ -432,7 +450,12 @@ class Trainer:
                             if isinstance(augmented, Image.Image):
                                 image = augmented
                             elif isinstance(augmented, torch.Tensor):
-                                image = self._to_pil(augmented.cpu())
+                                if augmented.dim() == 3:
+                                    image = self._to_pil(augmented.cpu())
+                                elif augmented.dim() == 4:
+                                    image = self._to_pil(augmented[0].cpu())
+                                else:
+                                    raise ValueError("train_augment returned tensor with invalid dimensions")
                             else:
                                 raise TypeError("train_augment must return PIL.Image or Tensor")
 
@@ -451,35 +474,27 @@ class Trainer:
                             continue
 
                         tensors = []
-                        patch_metadata = []
-                        for sample_patch in patch_samples:
+                        for patch_sample in patch_samples:
                             patch_img = (
-                                sample_patch.image
-                                if sample_patch.image.mode == "RGB"
-                                else sample_patch.image.convert("RGB")
+                                patch_sample.image
+                                if patch_sample.image.mode == "RGB"
+                                else patch_sample.image.convert("RGB")
                             )
-                            tensor = self.inference_transform(patch_img).unsqueeze(0)
-                            tensors.append(tensor)
-                            patch_metadata.append(
-                                {
-                                    "scale_index": int(sample_patch.scale_index),
-                                    "priority": bool(sample_patch.priority),
-                                    "complexity": float(sample_patch.complexity),
-                                }
-                            )
-                        patch_tensor_stack = torch.cat(tensors, dim=0)
-
-                    target_idx = int(target) if not isinstance(target, torch.Tensor) else int(target.item())
-                    if not precomputed:
-                        patch_tensor = patch_tensor_stack.to(self.accel.device)
-                        patch_count = patch_tensor.size(0)
+                            tensors.append(self.inference_transform(patch_img).unsqueeze(0))
+                        patch_tensor = torch.cat(tensors, dim=0).to(self.accel.device)
                         patch_targets = torch.full(
-                            (patch_count,),
+                            (patch_tensor.size(0),),
                             target_idx,
                             device=self.accel.device,
                             dtype=torch.long,
                         )
-                        weights = compute_patch_weights(patch_samples) if patch_samples else []
+                        weights = compute_patch_weights(patch_samples)
+                        patch_count = patch_tensor.size(0)
+
+                    if patch_tensor is None or patch_targets is None or patch_tensor.size(0) == 0:
+                        continue
+                    patch_count = patch_tensor.size(0)
+                    target_idx = patch_targets[0].item()
 
                     if not weights:
                         weights = [1.0 for _ in range(patch_count)]
