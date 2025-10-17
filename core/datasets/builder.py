@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from PIL import Image, UnidentifiedImageError
 import torch
@@ -17,9 +17,86 @@ from core.utils.logger import get_logger
 from .base import DatasetConfig, load_dataset_config
 from .sns_augment import build_sns_augment
 from .transforms import build_train_transforms, build_val_transforms
+from core.models.multipatch import generate_patches, estimate_priority_regions
 
 logger = get_logger(__name__)
 _DEBUG_WORKERS = os.environ.get("TVB_DATALOADER_DEBUG_WORKERS")
+
+
+class MultipatchDataset(torch.utils.data.Dataset):
+    """원본 이미지를 멀티패치 텐서로 변환해 반환하는 Dataset 래퍼."""
+
+    def __init__(
+        self,
+        base_dataset: torch.utils.data.Dataset,
+        *,
+        augment: Optional[Callable],
+        patch_transform: Callable[[Image.Image], torch.Tensor],
+        patch_params: Dict[str, Any],
+    ) -> None:
+        self.base = base_dataset
+        self.augment = augment
+        self.patch_transform = patch_transform
+        self.patch_params = patch_params
+        self._to_pil = transforms.ToPILImage()
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def _ensure_pil(self, image: Any) -> Image.Image:
+        if isinstance(image, Image.Image):
+            return image
+        if isinstance(image, torch.Tensor):
+            return self._to_pil(image)
+        raise TypeError(f"Unsupported image type for multipatch dataset: {type(image)}")
+
+    def __getitem__(self, index: int):
+        image, target = self.base[index]
+        image = self._ensure_pil(image)
+
+        if self.augment is not None:
+            augmented = self.augment(image)
+            if isinstance(augmented, Image.Image):
+                image = augmented
+            elif isinstance(augmented, torch.Tensor):
+                image = self._ensure_pil(augmented)
+            else:
+                raise TypeError("augment callable must return PIL.Image or Tensor")
+
+        priority_regions = estimate_priority_regions(image)
+        patch_samples = generate_patches(
+            image,
+            sizes=self.patch_params["sizes"],
+            n_patches=self.patch_params["n_patches"],
+            min_cell_size=self.patch_params["cell_sizes"],
+            overlap=self.patch_params["overlap"],
+            jitter=self.patch_params["jitter"],
+            max_patches=self.patch_params["max_patches"],
+            priority_regions=priority_regions,
+        )
+
+        if not patch_samples:
+            tensor = self.patch_transform(image if image.mode == "RGB" else image.convert("RGB"))
+            return tensor.unsqueeze(0), [
+                {"scale_index": 0, "priority": True, "complexity": 0.0}
+            ], target
+
+        patch_tensors: List[torch.Tensor] = []
+        metadata: List[Dict[str, Any]] = []
+        for sample in patch_samples:
+            patch_img = sample.image if sample.image.mode == "RGB" else sample.image.convert("RGB")
+            tensor = self.patch_transform(patch_img)
+            patch_tensors.append(tensor)
+            metadata.append(
+                {
+                    "scale_index": int(sample.scale_index),
+                    "priority": bool(sample.priority),
+                    "complexity": float(sample.complexity),
+                }
+            )
+
+        stacked = torch.stack(patch_tensors, dim=0).contiguous()
+        return stacked, metadata, target
 
 
 def _identity_collate(batch):
@@ -163,6 +240,37 @@ def _build_sample_weights(
     return torch.DoubleTensor(weights)
 
 
+def _build_train_pil_augment(cfg: DatasetConfig, sns_augment: Optional[Callable]) -> Optional[Callable]:
+    """패치 전처리용 PIL 학습 증강을 구성한다."""
+
+    ops: List[Callable] = []
+    if sns_augment is not None:
+        ops.append(transforms.Lambda(lambda img: sns_augment(img)))
+
+    if cfg.train.transforms:
+        for spec in cfg.train.transforms:
+            cls = getattr(transforms, spec.type, None)
+            if cls is None:
+                raise ValueError(f"unsupported transform for PIL augment: {spec.type}")
+            params = dict(spec.params)
+            if "transforms" in params:
+                params["transforms"] = [
+                    _instantiate(nested_spec) for nested_spec in transform_specs(params.pop("transforms"))
+                ]
+            ops.append(cls(**params))
+    else:
+        ops.extend(
+            [
+                transforms.RandomResizedCrop(cfg.image_size, scale=(0.8, 1.0)),
+                transforms.RandomHorizontalFlip(),
+            ]
+        )
+
+    if not ops:
+        return None
+    return transforms.Compose(ops)
+
+
 def build_dataloaders(
     cfg: DatasetConfig | dict,
     *,
@@ -172,6 +280,7 @@ def build_dataloaders(
     seed: Optional[int] = None,
     return_raw_val_images: bool = False,
     return_raw_train_images: bool = False,
+    multipatch_cfg: Optional[Dict[str, Any]] = None,
 ) -> Tuple[DataLoader, Optional[DataLoader], list[str], transforms.Compose, Optional[callable]]:
     """DatasetConfig를 받아 학습/검증 DataLoader를 생성한다."""
 
@@ -198,7 +307,13 @@ def build_dataloaders(
     if dataset_cfg.augment and isinstance(dataset_cfg.augment, dict):
         sns_config = dataset_cfg.augment.get("sns")
     sns_aug = build_sns_augment(sns_config)
-    train_tf = build_train_transforms(dataset_cfg, sns_aug)
+    precompute_patches = bool(dataset_cfg.loader.precompute_patches)
+    if precompute_patches:
+        train_tf = None
+        train_pil_augment = _build_train_pil_augment(dataset_cfg, sns_aug)
+    else:
+        train_tf = build_train_transforms(dataset_cfg, sns_aug)
+        train_pil_augment = None
     val_service_tf = build_val_transforms(dataset_cfg)
     val_tf = val_service_tf
 
@@ -268,6 +383,38 @@ def build_dataloaders(
         train_dataset = train_datasets[0]
     else:
         train_dataset = ConcatDataset(train_datasets)
+
+    if precompute_patches:
+        mp_cfg = multipatch_cfg or {}
+        sizes = mp_cfg.get("multiscale") or mp_cfg.get("scales") or [dataset_cfg.image_size]
+        sizes = tuple(int(x) for x in sizes)
+        cell_sizes = (
+            mp_cfg.get("cell_sizes")
+            or mp_cfg.get("min_cell_sizes")
+            or mp_cfg.get("min_cell_size")
+            or sizes
+        )
+        cell_sizes = tuple(int(x) for x in (cell_sizes if isinstance(cell_sizes, (list, tuple)) else (cell_sizes,)))
+        if len(cell_sizes) == 1 and len(sizes) > 1:
+            cell_sizes = tuple([cell_sizes[0]] * len(sizes))
+        patch_params = {
+            "sizes": sizes,
+            "cell_sizes": cell_sizes,
+            "n_patches": int(mp_cfg.get("n_patches", mp_cfg.get("patches", 0)) or 0),
+            "overlap": float(mp_cfg.get("patch_overlap", mp_cfg.get("overlap", 0.0)) or 0.0),
+            "jitter": float(mp_cfg.get("patch_jitter", mp_cfg.get("jitter", 0.0)) or 0.0),
+            "max_patches": int(mp_cfg.get("max_patches", 0) or 0),
+        }
+        if patch_params["max_patches"] <= 0:
+            patch_params["max_patches"] = None
+        train_dataset = MultipatchDataset(
+            train_dataset,
+            augment=train_pil_augment,
+            patch_transform=val_service_tf,
+            patch_params=patch_params,
+        )
+        train_loader_kwargs["collate_fn"] = _identity_collate
+        train_loader_params["collate_fn"] = _identity_collate
 
     sample_weights = _build_sample_weights(per_source_targets, normalized_weights)
     distributed = world_size > 1
@@ -390,5 +537,8 @@ def build_dataloaders(
             source_label,
             sampler_label,
         )
-    train_augment = sns_aug if return_raw_train_images else None
+    if precompute_patches:
+        train_augment = None
+    else:
+        train_augment = sns_aug if return_raw_train_images else None
     return train_loader, val_loader, list(class_names), val_service_tf, train_augment

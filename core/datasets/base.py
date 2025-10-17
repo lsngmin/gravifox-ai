@@ -54,6 +54,7 @@ class LoaderConfig:
     persistent_workers: bool = True
     drop_last: bool = True
     prefetch_factor: Optional[int] = None
+    precompute_patches: bool = False
 
 
 @dataclass

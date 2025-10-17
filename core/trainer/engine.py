@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Optional, Sequence, Tuple, List
+from types import SimpleNamespace
 
 import math
 import os
@@ -374,56 +375,99 @@ class Trainer:
             sample_targets: List[int] = []
 
             with self.accel.accumulate(self.model):
-                for image, target in batch:
-                    if isinstance(image, torch.Tensor):
-                        image = self._to_pil(image.cpu())
-                    elif not isinstance(image, Image.Image):
-                        raise TypeError(f"Unsupported training sample type: {type(image)}")
-
-                    if self.train_augment is not None:
-                        augmented = self.train_augment(image)
-                        if isinstance(augmented, Image.Image):
-                            image = augmented
-                        elif isinstance(augmented, torch.Tensor):
-                            image = self._to_pil(augmented.cpu())
-                        else:
-                            raise TypeError("train_augment must return PIL.Image or Tensor")
-
-                    priority_regions = estimate_priority_regions(image)
-                    patch_samples = generate_patches(
-                        image,
-                        sizes=self.inference_scales,
-                        n_patches=self.inference_n_patches,
-                        min_cell_size=self.inference_cell_sizes,
-                        overlap=self.inference_overlap,
-                        jitter=self.inference_jitter,
-                        max_patches=self.inference_max_patches,
-                        priority_regions=priority_regions,
+                for sample in batch:
+                    precomputed = (
+                        isinstance(sample, tuple)
+                        and len(sample) == 3
+                        and isinstance(sample[0], torch.Tensor)
+                        and sample[0].dim() == 4
                     )
-                    if not patch_samples:
-                        continue
 
-                    tensors = []
-                    for sample in patch_samples:
-                        patch_img = sample.image if sample.image.mode == "RGB" else sample.image.convert("RGB")
-                        tensor = self.inference_transform(patch_img).unsqueeze(0)
-                        tensors.append(tensor)
+                    if precomputed:
+                        patch_tensor_stack, patch_metadata, target = sample  # type: ignore[assignment]
+                        image = None
+                        patch_samples = None
+                    else:
+                        image, target = sample  # type: ignore[assignment]
+                        if isinstance(image, torch.Tensor):
+                            image = self._to_pil(image.cpu())
+                        elif not isinstance(image, Image.Image):
+                            raise TypeError(f"Unsupported training sample type: {type(image)}")
 
-                patch_tensor = torch.cat(tensors, dim=0).to(self.accel.device)
-                target_idx = int(target) if not isinstance(target, torch.Tensor) else int(target.item())
-                patch_targets = torch.full(
-                    (patch_tensor.size(0),),
-                    target_idx,
-                    device=self.accel.device,
-                    dtype=torch.long,
-                )
+                        if self.train_augment is not None:
+                            augmented = self.train_augment(image)
+                            if isinstance(augmented, Image.Image):
+                                image = augmented
+                            elif isinstance(augmented, torch.Tensor):
+                                image = self._to_pil(augmented.cpu())
+                            else:
+                                raise TypeError("train_augment must return PIL.Image or Tensor")
 
-                patch_count = patch_tensor.size(0)
-                patch_loss_accum: Optional[torch.Tensor] = None
-                logits_cpu_chunks: List[torch.Tensor] = []
-                offset = 0
-                for chunk in torch.split(patch_tensor, self.patch_chunk_size):
-                    chunk_targets = patch_targets[offset : offset + chunk.size(0)]
+                        priority_regions = estimate_priority_regions(image)
+                        patch_samples = generate_patches(
+                            image,
+                            sizes=self.inference_scales,
+                            n_patches=self.inference_n_patches,
+                            min_cell_size=self.inference_cell_sizes,
+                            overlap=self.inference_overlap,
+                            jitter=self.inference_jitter,
+                            max_patches=self.inference_max_patches,
+                            priority_regions=priority_regions,
+                        )
+                        if not patch_samples:
+                            continue
+
+                        tensors = []
+                        patch_metadata = []
+                        for sample_patch in patch_samples:
+                            patch_img = (
+                                sample_patch.image
+                                if sample_patch.image.mode == "RGB"
+                                else sample_patch.image.convert("RGB")
+                            )
+                            tensor = self.inference_transform(patch_img).unsqueeze(0)
+                            tensors.append(tensor)
+                            patch_metadata.append(
+                                {
+                                    "scale_index": int(sample_patch.scale_index),
+                                    "priority": bool(sample_patch.priority),
+                                    "complexity": float(sample_patch.complexity),
+                                }
+                            )
+                        patch_tensor_stack = torch.cat(tensors, dim=0)
+
+                    target_idx = int(target) if not isinstance(target, torch.Tensor) else int(target.item())
+                    patch_tensor = patch_tensor_stack.to(self.accel.device)
+                    patch_count = patch_tensor.size(0)
+                    patch_targets = torch.full(
+                        (patch_count,),
+                        target_idx,
+                        device=self.accel.device,
+                        dtype=torch.long,
+                    )
+
+                    if precomputed:
+                        meta_list = patch_metadata or []
+                        weight_infos = [
+                            SimpleNamespace(
+                                priority=bool(meta.get("priority", False)),
+                                complexity=float(meta.get("complexity", 0.0)),
+                                scale_index=int(meta.get("scale_index", 0)),
+                            )
+                            for meta in meta_list
+                        ]
+                        weights = compute_patch_weights(weight_infos) if weight_infos else []
+                    else:
+                        weights = compute_patch_weights(patch_samples) if patch_samples else []
+
+                    if not weights:
+                        weights = [1.0 for _ in range(patch_count)]
+
+                    patch_loss_accum: Optional[torch.Tensor] = None
+                    logits_cpu_chunks: List[torch.Tensor] = []
+                    offset = 0
+                    for chunk in torch.split(patch_tensor, self.patch_chunk_size):
+                        chunk_targets = patch_targets[offset : offset + chunk.size(0)]
                     offset += chunk.size(0)
                     with self.accel.autocast():
                         chunk_logits = self.model(chunk)
@@ -444,7 +488,6 @@ class Trainer:
                     {"real": float(prob[0]), "ai": float(prob[1])}
                     for prob in patch_probs
                 ]
-                weights = compute_patch_weights(patch_samples)
                 aggregated = aggregate_scores(
                     patch_scores,
                     method=self.inference_aggregate,

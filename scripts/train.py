@@ -196,6 +196,7 @@ def run_training(cfg: DictConfig) -> Path:
         seed=cfg.run.seed,
         return_raw_val_images=True,
         return_raw_train_images=True,
+        multipatch_cfg=_to_dict(getattr(cfg, "inference", {})) or {},
     )
     if accelerator.is_main_process:
         logger.info("데이터셋 클래스: %s", class_names)
