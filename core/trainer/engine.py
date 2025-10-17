@@ -370,194 +370,256 @@ class Trainer:
                 dynamic_ncols=True,
             )
 
+        def _normalize_target(value: Any) -> int:
+            if isinstance(value, (list, tuple)) and value:
+                return _normalize_target(value[0])
+            if isinstance(value, torch.Tensor):
+                if value.ndim == 0:
+                    return int(value.item())
+                return int(value.view(-1)[0].item())
+            return int(value)
+
+        def _prepare_sample(sample: Any) -> Optional[Tuple[torch.Tensor, torch.Tensor, List[float]]]:
+            if sample is None:
+                return None
+
+            maybe_tensor = sample[0] if isinstance(sample, (tuple, list)) and sample else sample
+            patch_tensor_cpu: Optional[torch.Tensor] = None
+            patch_targets_cpu: Optional[torch.Tensor] = None
+            sample_weights: List[float] = []
+
+            if isinstance(maybe_tensor, torch.Tensor) and maybe_tensor.dim() == 4:
+                patch_tensor_cpu = maybe_tensor
+                patch_count = patch_tensor_cpu.size(0)
+                target_obj = sample[-1] if isinstance(sample, (tuple, list)) and len(sample) > 1 else 0
+                target_idx = _normalize_target(target_obj)
+                patch_targets_cpu = torch.full(
+                    (patch_count,),
+                    target_idx,
+                    device="cpu",
+                    dtype=torch.long,
+                )
+                metadata_seq = None
+                if isinstance(sample, (tuple, list)):
+                    if len(sample) >= 3:
+                        metadata_seq = sample[1]
+                    elif len(sample) == 2 and isinstance(sample[1], (list, tuple)):
+                        metadata_seq = sample[1]
+                if isinstance(metadata_seq, (list, tuple)):
+                    dict_seq = [meta for meta in metadata_seq if isinstance(meta, dict)]
+                    if dict_seq and all("weight" in meta for meta in dict_seq):
+                        sample_weights = [float(meta.get("weight", 1.0)) for meta in dict_seq]
+                    else:
+                        weight_infos = [
+                            SimpleNamespace(
+                                priority=bool(meta.get("priority", False)),
+                                complexity=float(meta.get("complexity", 0.0)),
+                                scale_index=int(meta.get("scale_index", 0)),
+                            )
+                            for meta in dict_seq
+                        ]
+                        if weight_infos:
+                            sample_weights = compute_patch_weights(weight_infos)
+            else:
+                if isinstance(sample, (tuple, list)) and sample:
+                    image = sample[0]
+                    target_idx = _normalize_target(sample[1] if len(sample) > 1 else 0)
+                else:
+                    image = sample
+                    target_idx = 0
+
+                if isinstance(image, torch.Tensor):
+                    if image.dim() == 3:
+                        image = self._to_pil(image.cpu())
+                    elif image.dim() == 4:
+                        image = self._to_pil(image[0].cpu())
+                    else:
+                        raise ValueError(f"Unsupported tensor shape for image: {image.shape}")
+                elif not isinstance(image, Image.Image):
+                    raise TypeError(f"Unsupported training sample type: {type(image)}")
+
+                if self.train_augment is not None:
+                    augmented = self.train_augment(image)
+                    if isinstance(augmented, Image.Image):
+                        image = augmented
+                    elif isinstance(augmented, torch.Tensor):
+                        if augmented.dim() == 3:
+                            image = self._to_pil(augmented.cpu())
+                        elif augmented.dim() == 4:
+                            image = self._to_pil(augmented[0].cpu())
+                        else:
+                            raise ValueError("train_augment returned tensor with invalid dimensions")
+                    else:
+                        raise TypeError("train_augment must return PIL.Image or Tensor")
+
+                priority_regions = estimate_priority_regions(image)
+                patch_samples = generate_patches(
+                    image,
+                    sizes=self.inference_scales,
+                    n_patches=self.inference_n_patches,
+                    min_cell_size=self.inference_cell_sizes,
+                    overlap=self.inference_overlap,
+                    jitter=self.inference_jitter,
+                    max_patches=self.inference_max_patches,
+                    priority_regions=priority_regions,
+                )
+                if not patch_samples:
+                    return None
+
+                tensors = []
+                for patch_sample in patch_samples:
+                    patch_img = (
+                        patch_sample.image
+                        if patch_sample.image.mode == "RGB"
+                        else patch_sample.image.convert("RGB")
+                    )
+                    tensors.append(self.inference_transform(patch_img).unsqueeze(0))
+                patch_tensor_cpu = torch.cat(tensors, dim=0)
+                patch_targets_cpu = torch.full(
+                    (patch_tensor_cpu.size(0),),
+                    target_idx,
+                    device="cpu",
+                    dtype=torch.long,
+                )
+                sample_weights = compute_patch_weights(patch_samples)
+
+            if patch_tensor_cpu is None or patch_targets_cpu is None or patch_tensor_cpu.size(0) == 0:
+                return None
+
+            if not sample_weights:
+                sample_weights = [1.0 for _ in range(patch_tensor_cpu.size(0))]
+
+            return patch_tensor_cpu, patch_targets_cpu, sample_weights
+
+        buffered_samples: List[Tuple[torch.Tensor, torch.Tensor, List[float]]] = []
+
         for step, batch in enumerate(self.train_loader, start=1):
             if not batch:
+                if pbar is not None:
+                    pbar.update(1)
+                steps_processed += 1
+                if steps_limit > 0 and steps_processed >= steps_limit:
+                    break
                 continue
+
+            if not isinstance(batch, (list, tuple)):
+                batch = [batch]
+
+            prepared_samples: List[Tuple[torch.Tensor, torch.Tensor, List[float]]] = []
+            for sample in batch:
+                prepared = _prepare_sample(sample)
+                if prepared is not None:
+                    prepared_samples.append(prepared)
+
+            if prepared_samples:
+                buffered_samples.extend(prepared_samples)
+
+            total_buffer_patches = sum(sample[0].size(0) for sample in buffered_samples)
+            is_last_loader_step = step == total_steps
+            limit_reached_after_this = steps_limit > 0 and (steps_processed + 1) >= steps_limit
+            should_process = total_buffer_patches >= self.patch_chunk_size or is_last_loader_step or limit_reached_after_this
+
             sample_losses: List[torch.Tensor] = []
             sample_ai_scores: List[float] = []
             sample_real_scores: List[float] = []
             sample_targets: List[int] = []
+            batch_loss_value: Optional[float] = None
 
-            with self.accel.accumulate(self.model):
-                for sample in batch:
-                    if sample is None:
-                        continue
+            if should_process and buffered_samples:
+                with self.accel.accumulate(self.model):
+                    stacked_patches: List[torch.Tensor] = []
+                    stacked_targets: List[torch.Tensor] = []
+                    stacked_weights: List[float] = []
+                    patch_sample_indices: List[int] = []
+                    sample_label_indices: List[int] = []
+                    processed_sample_idx = 0
 
-                    def _normalize_target(value: Any) -> int:
-                        if isinstance(value, (list, tuple)) and value:
-                            return _normalize_target(value[0])
-                        if isinstance(value, torch.Tensor):
-                            if value.ndim == 0:
-                                return int(value.item())
-                            return int(value.view(-1)[0].item())
-                        try:
-                            return int(value)
-                        except Exception:
-                            raise TypeError(f"Unsupported target type: {type(value)}")
-
-                    patch_tensor: Optional[torch.Tensor] = None
-                    patch_targets: Optional[torch.Tensor] = None
-                    patch_samples: Optional[List[PatchSample]] = None
-                    weights: List[float] = []
-
-                    maybe_tensor = sample[0] if isinstance(sample, (tuple, list)) and sample else sample
-                    if isinstance(maybe_tensor, torch.Tensor) and maybe_tensor.dim() == 4:
-                        patch_tensor = maybe_tensor.to(self.accel.device)
-                        patch_count = patch_tensor.size(0)
-                        target_obj = sample[-1] if isinstance(sample, (tuple, list)) and len(sample) > 1 else 0
-                        target_idx = _normalize_target(target_obj)
-                        patch_targets = torch.full(
-                            (patch_count,),
-                            target_idx,
-                            device=self.accel.device,
-                            dtype=torch.long,
-                        )
-                        metadata_seq = None
-                        if isinstance(sample, (tuple, list)):
-                            if len(sample) >= 3:
-                                metadata_seq = sample[1]
-                            elif len(sample) == 2 and isinstance(sample[1], (list, tuple)):
-                                metadata_seq = sample[1]
-                        if isinstance(metadata_seq, (list, tuple)):
-                            dict_seq = [meta for meta in metadata_seq if isinstance(meta, dict)]
-                            if dict_seq and all("weight" in meta for meta in dict_seq):
-                                weights = [float(meta.get("weight", 1.0)) for meta in dict_seq]
-                            else:
-                                weight_infos = [
-                                    SimpleNamespace(
-                                        priority=bool(meta.get("priority", False)),
-                                        complexity=float(meta.get("complexity", 0.0)),
-                                        scale_index=int(meta.get("scale_index", 0)),
-                                    )
-                                    for meta in dict_seq
-                                ]
-                                if weight_infos:
-                                    weights = compute_patch_weights(weight_infos)
-                        patch_samples = None
-                    else:
-                        if isinstance(sample, (tuple, list)) and sample:
-                            image = sample[0]
-                            target_idx = _normalize_target(sample[1] if len(sample) > 1 else 0)
-                        else:
-                            image = sample
-                            target_idx = 0
-
-                        if isinstance(image, torch.Tensor):
-                            if image.dim() == 3:
-                                image = self._to_pil(image.cpu())
-                            elif image.dim() == 4:
-                                image = self._to_pil(image[0].cpu())
-                            else:
-                                raise ValueError(f"Unsupported tensor shape for image: {image.shape}")
-                        elif not isinstance(image, Image.Image):
-                            raise TypeError(f"Unsupported training sample type: {type(image)}")
-
-                        if self.train_augment is not None:
-                            augmented = self.train_augment(image)
-                            if isinstance(augmented, Image.Image):
-                                image = augmented
-                            elif isinstance(augmented, torch.Tensor):
-                                if augmented.dim() == 3:
-                                    image = self._to_pil(augmented.cpu())
-                                elif augmented.dim() == 4:
-                                    image = self._to_pil(augmented[0].cpu())
-                                else:
-                                    raise ValueError("train_augment returned tensor with invalid dimensions")
-                            else:
-                                raise TypeError("train_augment must return PIL.Image or Tensor")
-
-                        priority_regions = estimate_priority_regions(image)
-                        patch_samples = generate_patches(
-                            image,
-                            sizes=self.inference_scales,
-                            n_patches=self.inference_n_patches,
-                            min_cell_size=self.inference_cell_sizes,
-                            overlap=self.inference_overlap,
-                            jitter=self.inference_jitter,
-                            max_patches=self.inference_max_patches,
-                            priority_regions=priority_regions,
-                        )
-                        if not patch_samples:
+                    for patch_tensor_cpu, patch_targets_cpu, sample_weights in buffered_samples:
+                        patch_count = patch_tensor_cpu.size(0)
+                        if patch_count == 0:
                             continue
+                        stacked_patches.append(patch_tensor_cpu)
+                        stacked_targets.append(patch_targets_cpu)
+                        stacked_weights.extend(sample_weights[:patch_count])
+                        patch_sample_indices.extend([processed_sample_idx] * patch_count)
+                        sample_label_indices.append(int(patch_targets_cpu[0].item()))
+                        processed_sample_idx += 1
 
-                        tensors = []
-                        for patch_sample in patch_samples:
-                            patch_img = (
-                                patch_sample.image
-                                if patch_sample.image.mode == "RGB"
-                                else patch_sample.image.convert("RGB")
-                            )
-                            tensors.append(self.inference_transform(patch_img).unsqueeze(0))
-                        patch_tensor = torch.cat(tensors, dim=0).to(self.accel.device)
-                        patch_targets = torch.full(
-                            (patch_tensor.size(0),),
-                            target_idx,
-                            device=self.accel.device,
+                    if stacked_patches:
+                        batch_patch_tensor = torch.cat(stacked_patches, dim=0)
+                        batch_patch_targets = torch.cat(stacked_targets, dim=0)
+                        total_patch_count = batch_patch_tensor.size(0)
+                        weights_tensor = torch.tensor(stacked_weights[:total_patch_count], dtype=torch.float32)
+                        sample_index_tensor = torch.tensor(
+                            patch_sample_indices[:total_patch_count],
                             dtype=torch.long,
                         )
-                        weights = compute_patch_weights(patch_samples)
-                        patch_count = patch_tensor.size(0)
 
-                    if patch_tensor is None or patch_targets is None or patch_tensor.size(0) == 0:
-                        continue
-                    patch_count = patch_tensor.size(0)
-                    target_idx = patch_targets[0].item()
+                        patch_loss_accum: Optional[torch.Tensor] = None
+                        logits_cpu_chunks: List[torch.Tensor] = []
 
-                    if not weights:
-                        weights = [1.0 for _ in range(patch_count)]
+                        offset = 0
+                        for chunk_cpu in torch.split(batch_patch_tensor, self.patch_chunk_size):
+                            chunk_size = chunk_cpu.size(0)
+                            chunk = chunk_cpu.to(self.accel.device, non_blocking=True)
+                            chunk_targets = batch_patch_targets[offset : offset + chunk_size].to(
+                                self.accel.device,
+                                non_blocking=True,
+                            )
+                            offset += chunk_size
+                            with self.accel.autocast():
+                                chunk_logits = self.model(chunk)
+                                chunk_loss = self.criterion(chunk_logits, chunk_targets)
+                            weight = float(chunk_size) / float(total_patch_count)
+                            weighted_chunk_loss = chunk_loss * weight
+                            if patch_loss_accum is None:
+                                patch_loss_accum = weighted_chunk_loss
+                            else:
+                                patch_loss_accum = patch_loss_accum + weighted_chunk_loss
+                            logits_cpu_chunks.append(chunk_logits.detach().cpu())
 
-                    patch_loss_accum: Optional[torch.Tensor] = None
-                    logits_cpu_chunks: List[torch.Tensor] = []
-                    offset = 0
-                    for chunk in torch.split(patch_tensor, self.patch_chunk_size):
-                        chunk_targets = patch_targets[offset : offset + chunk.size(0)]
-                        offset += chunk.size(0)
-                        with self.accel.autocast():
-                            chunk_logits = self.model(chunk)
-                            chunk_loss = self.criterion(chunk_logits, chunk_targets)
-                        weight = float(chunk.size(0)) / float(patch_count)
-                        weighted_chunk_loss = chunk_loss * weight
-                        if patch_loss_accum is None:
-                            patch_loss_accum = weighted_chunk_loss
-                        else:
-                            patch_loss_accum = patch_loss_accum + weighted_chunk_loss
-                        logits_cpu_chunks.append(chunk_logits.detach().cpu())
-                    if patch_loss_accum is None:
-                        continue
-                    sample_losses.append(patch_loss_accum)
+                        if patch_loss_accum is not None:
+                            sample_losses.append(patch_loss_accum)
 
-                patch_probs = torch.softmax(torch.cat(logits_cpu_chunks, dim=0), dim=1)
-                patch_scores = [
-                    {"real": float(prob[0]), "ai": float(prob[1])}
-                    for prob in patch_probs
-                ]
-                aggregated = aggregate_scores(
-                    patch_scores,
-                    method=self.inference_aggregate,
-                    weights=weights if weights else None,
-                )
-                sample_ai_scores.append(float(aggregated["ai"]))
-                sample_real_scores.append(float(aggregated["real"]))
-                sample_targets.append(target_idx)
-                del patch_tensor
-                del patch_targets
+                            patch_probs = torch.softmax(torch.cat(logits_cpu_chunks, dim=0), dim=1)
+                            weights_np = weights_tensor.tolist()
 
-                if not sample_losses:
-                    continue
+                            for sample_idx, target_idx in enumerate(sample_label_indices):
+                                mask = sample_index_tensor == sample_idx
+                                if not bool(mask.any()):
+                                    continue
+                                sample_probs = patch_probs[mask]
+                                weight_list = [weights_np[i] for i, m in enumerate(mask.tolist()) if m]
+                                patch_scores = [
+                                    {"real": float(prob[0]), "ai": float(prob[1])}
+                                    for prob in sample_probs
+                                ]
+                                aggregated = aggregate_scores(
+                                    patch_scores,
+                                    method=self.inference_aggregate,
+                                    weights=weight_list if weight_list else None,
+                                )
+                                sample_ai_scores.append(float(aggregated["ai"]))
+                                sample_real_scores.append(float(aggregated["real"]))
+                                sample_targets.append(target_idx)
 
-                batch_loss = torch.stack(sample_losses).mean()
-                self.accel.backward(batch_loss)
-                if self.accel.sync_gradients and self.cfg.max_grad_norm > 0:
-                    self.accel.clip_grad_norm_(self.model.parameters(), max_norm=self.cfg.max_grad_norm)
-                self.optimizer.step()
-                self.optimizer.zero_grad(set_to_none=True)
+                            if sample_losses:
+                                batch_loss = torch.stack(sample_losses).mean()
+                                batch_loss_value = float(batch_loss.detach().item())
+                                self.accel.backward(batch_loss)
+                                if self.accel.sync_gradients and self.cfg.max_grad_norm > 0:
+                                    self.accel.clip_grad_norm_(self.model.parameters(), max_norm=self.cfg.max_grad_norm)
+                                self.optimizer.step()
+                                self.optimizer.zero_grad(set_to_none=True)
+                                buffered_samples = []
 
             sample_count = len(sample_targets)
-            total_loss += batch_loss.detach().item() * sample_count
-            for ai_score, real_score, tgt in zip(sample_ai_scores, sample_real_scores, sample_targets):
-                total_count += 1
-                pred_idx = 1 if ai_score >= real_score else 0
-                total_acc += 1.0 if pred_idx == tgt else 0.0
+            if sample_count > 0 and batch_loss_value is not None:
+                total_loss += batch_loss_value * sample_count
+                for ai_score, real_score, tgt in zip(sample_ai_scores, sample_real_scores, sample_targets):
+                    total_count += 1
+                    pred_idx = 1 if ai_score >= real_score else 0
+                    total_acc += 1.0 if pred_idx == tgt else 0.0
 
             if pbar is not None:
                 avg_loss = total_loss / max(1, total_count)
@@ -567,7 +629,11 @@ class Trainer:
 
             steps_processed += 1
 
-            if (step % max(1, self.cfg.log_interval)) == 0 and self.accel.is_main_process:
+            if (
+                (step % max(1, self.cfg.log_interval)) == 0
+                and self.accel.is_main_process
+                and total_count > 0
+            ):
                 avg_loss = total_loss / max(1, total_count)
                 avg_acc = total_acc / max(1, total_count)
                 self.train_logger.info(
