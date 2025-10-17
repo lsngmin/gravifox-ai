@@ -15,10 +15,11 @@ from torchvision import transforms as vision_transforms
 
 from core.utils.logger import get_logger, get_train_logger
 from core.utils.seed import set_seed as set_global_seed
-from core.models.multipatch import aggregate_scores, generate_patches
+from core.models.multipatch import PatchSample, aggregate_scores, generate_patches
 from .experiment_manager import ExperimentManager, MonitorConfig
 from .metrics import classification_metrics, top1_accuracy
 from .optim import create_optimizer
+
 
 @dataclass
 class TrainCfg:
@@ -70,14 +71,12 @@ class Trainer:
             batch_size = loader.batch_size
         except AttributeError:
             batch_size = getattr(loader, "batch_sampler", None)
-        return (
-            "batch_size={} num_workers={} prefetch_factor={} pin_memory={} persistent_workers={}".format(
-                getattr(loader, "batch_size", batch_size),
-                getattr(loader, "num_workers", "n/a"),
-                prefetch,
-                getattr(loader, "pin_memory", "n/a"),
-                getattr(loader, "persistent_workers", "n/a"),
-            )
+        return "batch_size={} num_workers={} prefetch_factor={} pin_memory={} persistent_workers={}".format(
+            getattr(loader, "batch_size", batch_size),
+            getattr(loader, "num_workers", "n/a"),
+            prefetch,
+            getattr(loader, "pin_memory", "n/a"),
+            getattr(loader, "persistent_workers", "n/a"),
         )
 
     def __init__(
@@ -105,7 +104,9 @@ class Trainer:
         self.patch_chunk_size = max(1, int(cfg.patch_chunk_size or 8))
 
         monitor = MonitorConfig(key=cfg.ckpt_monitor, mode=cfg.ckpt_mode)
-        self.experiment = experiment or ExperimentManager(Path(out_dir), monitor=monitor)
+        self.experiment = experiment or ExperimentManager(
+            Path(out_dir), monitor=monitor
+        )
         self.out_dir = Path(self.experiment.root)
 
         self.system_logger = get_logger(__name__)
@@ -154,12 +155,24 @@ class Trainer:
         self.scheduler = self._build_scheduler()
 
         if self.scheduler is not None:
-            (self.model, self.optimizer, self.train_loader, self.val_loader, self.scheduler) = self.accel.prepare(
-                self.model, self.optimizer, self.train_loader, self.val_loader, self.scheduler
+            (
+                self.model,
+                self.optimizer,
+                self.train_loader,
+                self.val_loader,
+                self.scheduler,
+            ) = self.accel.prepare(
+                self.model,
+                self.optimizer,
+                self.train_loader,
+                self.val_loader,
+                self.scheduler,
             )
         else:
-            (self.model, self.optimizer, self.train_loader, self.val_loader) = self.accel.prepare(
-                self.model, self.optimizer, self.train_loader, self.val_loader
+            (self.model, self.optimizer, self.train_loader, self.val_loader) = (
+                self.accel.prepare(
+                    self.model, self.optimizer, self.train_loader, self.val_loader
+                )
             )
 
         if self.accel.is_main_process:
@@ -224,7 +237,9 @@ class Trainer:
         self.inference_n_patches: int = max(0, n_patches)
         self.inference_aggregate: str = aggregate
 
-    def _evaluate_validation_image(self, image: Image.Image) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _evaluate_validation_image(
+        self, image: Image.Image
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         patch_samples = generate_patches(
             image,
             sizes=self.inference_scales,
@@ -232,13 +247,19 @@ class Trainer:
             min_cell_size=self.inference_cell_sizes,
         )
         if not patch_samples:
-            base_probs = torch.tensor([0.5, 0.5], device=self.accel.device, dtype=torch.float32)
+            base_probs = torch.tensor(
+                [0.5, 0.5], device=self.accel.device, dtype=torch.float32
+            )
             logits_tensor = torch.log(torch.clamp(base_probs, min=1e-8))
             return base_probs, logits_tensor
 
         tensors = []
         for sample in patch_samples:
-            patch_img = sample.image if sample.image.mode == "RGB" else sample.image.convert("RGB")
+            patch_img = (
+                sample.image
+                if sample.image.mode == "RGB"
+                else sample.image.convert("RGB")
+            )
             tensor = self.inference_transform(patch_img).unsqueeze(0)
             tensors.append(tensor)
 
@@ -249,8 +270,7 @@ class Trainer:
 
         probs_cpu = probs.detach().cpu()
         patch_scores = [
-            {"real": float(prob[0]), "ai": float(prob[1])}
-            for prob in probs_cpu
+            {"real": float(prob[0]), "ai": float(prob[1])} for prob in probs_cpu
         ]
         aggregated = aggregate_scores(patch_scores, method=self.inference_aggregate)
         probs_tensor = torch.tensor(
@@ -267,12 +287,15 @@ class Trainer:
     # ------------------------------------------------------------------
     def _build_criterion(self, name: str) -> nn.Module:
         if name.lower() == "focal":
+
             class FocalLoss(nn.Module):
                 def __init__(self, gamma: float = 2.0):
                     super().__init__()
                     self.gamma = gamma
 
-                def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+                def forward(
+                    self, logits: torch.Tensor, targets: torch.Tensor
+                ) -> torch.Tensor:
                     log_probs = torch.nn.functional.log_softmax(logits, dim=1)
                     probs = torch.exp(log_probs)
                     focal = (1 - probs) ** self.gamma
@@ -330,17 +353,21 @@ class Trainer:
         for step, batch in enumerate(self.train_loader, start=1):
             if not batch:
                 continue
-            sample_losses: List[torch.Tensor] = []
+            sample_losses: List[float] = []
             sample_ai_scores: List[float] = []
             sample_real_scores: List[float] = []
             sample_targets: List[int] = []
 
             with self.accel.accumulate(self.model):
+                processed_samples: List[Tuple[List[PatchSample], int]] = []
+
                 for image, target in batch:
                     if isinstance(image, torch.Tensor):
                         image = self._to_pil(image.cpu())
                     elif not isinstance(image, Image.Image):
-                        raise TypeError(f"Unsupported training sample type: {type(image)}")
+                        raise TypeError(
+                            f"Unsupported training sample type: {type(image)}"
+                        )
 
                     if self.train_augment is not None:
                         augmented = self.train_augment(image)
@@ -349,7 +376,9 @@ class Trainer:
                         elif isinstance(augmented, torch.Tensor):
                             image = self._to_pil(augmented.cpu())
                         else:
-                            raise TypeError("train_augment must return PIL.Image or Tensor")
+                            raise TypeError(
+                                "train_augment must return PIL.Image or Tensor"
+                            )
 
                     patch_samples = generate_patches(
                         image,
@@ -360,74 +389,96 @@ class Trainer:
                     if not patch_samples:
                         continue
 
-                    tensors = []
+                    if isinstance(target, torch.Tensor):
+                        target_idx = int(target.item())
+                    else:
+                        target_idx = int(target)
+                    processed_samples.append((patch_samples, target_idx))
+
+                num_valid_samples = len(processed_samples)
+                if num_valid_samples == 0:
+                    continue
+
+                for patch_samples, target_idx in processed_samples:
+                    tensors: List[torch.Tensor] = []
                     for sample in patch_samples:
-                        patch_img = sample.image if sample.image.mode == "RGB" else sample.image.convert("RGB")
+                        patch_img = (
+                            sample.image
+                            if sample.image.mode == "RGB"
+                            else sample.image.convert("RGB")
+                        )
                         tensor = self.inference_transform(patch_img).unsqueeze(0)
                         tensors.append(tensor)
 
-                patch_tensor = torch.cat(tensors, dim=0).to(self.accel.device)
-                target_idx = int(target) if not isinstance(target, torch.Tensor) else int(target.item())
-                patch_targets = torch.full(
-                    (patch_tensor.size(0),),
-                    target_idx,
-                    device=self.accel.device,
-                    dtype=torch.long,
-                )
+                    patch_tensor = torch.cat(tensors, dim=0).to(self.accel.device)
+                    patch_targets = torch.full(
+                        (patch_tensor.size(0),),
+                        target_idx,
+                        device=self.accel.device,
+                        dtype=torch.long,
+                    )
 
-                patch_count = patch_tensor.size(0)
-                loss_accum: Optional[torch.Tensor] = None
-                logits_cpu_chunks: List[torch.Tensor] = []
-                offset = 0
-                for chunk in torch.split(patch_tensor, self.patch_chunk_size):
-                    chunk_targets = patch_targets[offset : offset + chunk.size(0)]
-                    offset += chunk.size(0)
-                    with self.accel.autocast():
-                        chunk_logits = self.model(chunk)
-                        chunk_loss = self.criterion(chunk_logits, chunk_targets)
-                    weight = chunk.size(0)
-                    if loss_accum is None:
-                        loss_accum = chunk_loss * weight
-                    else:
-                        loss_accum = loss_accum + chunk_loss * weight
-                    logits_cpu_chunks.append(chunk_logits.detach().cpu())
-                if loss_accum is None:
-                    continue
-                patch_loss = loss_accum / patch_count
-                sample_losses.append(patch_loss)
+                    patch_count = patch_tensor.size(0)
+                    loss_accum = torch.zeros((), device=self.accel.device)
+                    logits_cpu_chunks: List[torch.Tensor] = []
+                    offset = 0
+                    for chunk in torch.split(patch_tensor, self.patch_chunk_size):
+                        chunk_targets = patch_targets[offset : offset + chunk.size(0)]
+                        offset += chunk.size(0)
+                        with self.accel.autocast():
+                            chunk_logits = self.model(chunk)
+                            chunk_loss = self.criterion(chunk_logits, chunk_targets)
+                        grad_scale = float(chunk.size(0)) / float(
+                            patch_count * num_valid_samples
+                        )
+                        self.accel.backward(chunk_loss * grad_scale)
+                        loss_accum = loss_accum + chunk_loss.detach() * chunk.size(0)
+                        logits_cpu_chunks.append(chunk_logits.detach().cpu())
 
-                patch_probs = torch.softmax(torch.cat(logits_cpu_chunks, dim=0), dim=1)
-                patch_scores = [
-                    {"real": float(prob[0]), "ai": float(prob[1])}
-                    for prob in patch_probs
-                ]
-                aggregated = aggregate_scores(patch_scores, method=self.inference_aggregate)
-                sample_ai_scores.append(float(aggregated["ai"]))
-                sample_real_scores.append(float(aggregated["real"]))
-                sample_targets.append(target_idx)
-                del patch_tensor
-                del patch_targets
+                    patch_loss = float((loss_accum / patch_count).item())
+                    sample_losses.append(patch_loss)
+
+                    patch_probs = torch.softmax(
+                        torch.cat(logits_cpu_chunks, dim=0), dim=1
+                    )
+                    patch_scores = [
+                        {"real": float(prob[0]), "ai": float(prob[1])}
+                        for prob in patch_probs
+                    ]
+                    aggregated = aggregate_scores(
+                        patch_scores, method=self.inference_aggregate
+                    )
+                    sample_ai_scores.append(float(aggregated["ai"]))
+                    sample_real_scores.append(float(aggregated["real"]))
+                    sample_targets.append(target_idx)
+                    del patch_tensor
+                    del patch_targets
 
                 if not sample_losses:
                     continue
 
-                batch_loss = torch.stack(sample_losses).mean()
-                self.accel.backward(batch_loss)
+                batch_loss_value = sum(sample_losses) / len(sample_losses)
                 if self.accel.sync_gradients and self.cfg.max_grad_norm > 0:
-                    self.accel.clip_grad_norm_(self.model.parameters(), max_norm=self.cfg.max_grad_norm)
+                    self.accel.clip_grad_norm_(
+                        self.model.parameters(), max_norm=self.cfg.max_grad_norm
+                    )
                 self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
 
             sample_count = len(sample_targets)
-            total_loss += batch_loss.detach().item() * sample_count
-            for ai_score, real_score, tgt in zip(sample_ai_scores, sample_real_scores, sample_targets):
+            total_loss += batch_loss_value * sample_count
+            for ai_score, real_score, tgt in zip(
+                sample_ai_scores, sample_real_scores, sample_targets
+            ):
                 total_count += 1
                 pred_idx = 1 if ai_score >= real_score else 0
                 total_acc += 1.0 if pred_idx == tgt else 0.0
 
             steps_processed += 1
 
-            if (step % max(1, self.cfg.log_interval)) == 0 and self.accel.is_main_process:
+            if (
+                step % max(1, self.cfg.log_interval)
+            ) == 0 and self.accel.is_main_process:
                 avg_loss = total_loss / max(1, total_count)
                 avg_acc = total_acc / max(1, total_count)
                 self.train_logger.info(
@@ -442,7 +493,10 @@ class Trainer:
             if steps_limit > 0 and steps_processed >= steps_limit:
                 break
 
-        return {"loss": total_loss / max(1, total_count), "acc": total_acc / max(1, total_count)}
+        return {
+            "loss": total_loss / max(1, total_count),
+            "acc": total_acc / max(1, total_count),
+        }
 
     @torch.no_grad()
     def _validate(self) -> Dict[str, float]:
@@ -462,7 +516,9 @@ class Trainer:
                 if isinstance(image, torch.Tensor):
                     image = self._to_pil(image.cpu())
                 elif not isinstance(image, Image.Image):
-                    raise TypeError(f"Unsupported validation sample type: {type(image)}")
+                    raise TypeError(
+                        f"Unsupported validation sample type: {type(image)}"
+                    )
                 probs_tensor, logits_tensor = self._evaluate_validation_image(image)
                 if isinstance(target, torch.Tensor):
                     target_idx = int(target.item())
@@ -477,10 +533,15 @@ class Trainer:
                 total_count += 1
 
                 logits_collector.append(self.accel.gather(logits_tensor.unsqueeze(0)))
-                target_tensor = torch.tensor([target_idx], device=self.accel.device, dtype=torch.long)
+                target_tensor = torch.tensor(
+                    [target_idx], device=self.accel.device, dtype=torch.long
+                )
                 targets_collector.append(self.accel.gather(target_tensor))
 
-        metrics = {"loss": total_loss / max(1, total_count), "acc": total_acc / max(1, total_count)}
+        metrics = {
+            "loss": total_loss / max(1, total_count),
+            "acc": total_acc / max(1, total_count),
+        }
         if logits_collector:
             logits_cat = torch.cat(logits_collector)
             targets_cat = torch.cat(targets_collector)
@@ -497,8 +558,16 @@ class Trainer:
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
         total_epochs = max(1, int(self.cfg.epochs))
-        partial_epochs = self.cfg.partial_epochs if self.cfg.partial_epochs is not None else total_epochs
-        full_epochs = self.cfg.full_epochs if self.cfg.full_epochs is not None else max(total_epochs - partial_epochs, 0)
+        partial_epochs = (
+            self.cfg.partial_epochs
+            if self.cfg.partial_epochs is not None
+            else total_epochs
+        )
+        full_epochs = (
+            self.cfg.full_epochs
+            if self.cfg.full_epochs is not None
+            else max(total_epochs - partial_epochs, 0)
+        )
 
         if partial_epochs < 0:
             partial_epochs = 0
@@ -514,7 +583,9 @@ class Trainer:
                 full_epochs = max(total_epochs - partial_epochs, 0)
 
         max_steps_available = len(self.train_loader)
-        partial_steps = self.cfg.partial_steps if (self.cfg.partial_steps or 0) > 0 else None
+        partial_steps = (
+            self.cfg.partial_steps if (self.cfg.partial_steps or 0) > 0 else None
+        )
         full_steps = self.cfg.full_steps if (self.cfg.full_steps or 0) > 0 else None
 
         self.system_logger.info(
@@ -526,7 +597,9 @@ class Trainer:
             str(full_steps) if full_steps is not None else "auto",
         )
 
-        early_monitor = (self.cfg.early_monitor or self.cfg.ckpt_monitor or "val_loss").lower()
+        early_monitor = (
+            self.cfg.early_monitor or self.cfg.ckpt_monitor or "val_loss"
+        ).lower()
         early_mode = (self.cfg.early_mode or self.cfg.ckpt_mode or "min").lower()
         early_best: Optional[float] = None
         epochs_no_improve = 0
@@ -548,7 +621,11 @@ class Trainer:
                 steps_limit = max(1, min(int(steps_target), max_steps_available))
 
             self.system_logger.info(
-                "에폭 %d/%d (%s) - steps_limit=%d", epoch, total_epochs, phase, steps_limit
+                "에폭 %d/%d (%s) - steps_limit=%d",
+                epoch,
+                total_epochs,
+                phase,
+                steps_limit,
             )
 
             train_metrics = self._train_one_epoch(epoch, steps_limit)
@@ -558,7 +635,11 @@ class Trainer:
             if self.scheduler is not None:
                 if self._scheduler_needs_metric:
                     metric_key = (self.cfg.sched_monitor or "val_loss").lower()
-                    metric = val_metrics["loss"] if metric_key == "val_loss" else val_metrics.get("acc", 0.0)
+                    metric = (
+                        val_metrics["loss"]
+                        if metric_key == "val_loss"
+                        else val_metrics.get("acc", 0.0)
+                    )
                     self.scheduler.step(metric)
                 else:
                     self.scheduler.step()
@@ -611,7 +692,9 @@ class Trainer:
                 else:
                     epochs_no_improve += 1
 
-            if self.cfg.early_stop and epochs_no_improve >= max(1, self.cfg.early_patience):
+            if self.cfg.early_stop and epochs_no_improve >= max(
+                1, self.cfg.early_patience
+            ):
                 self.train_logger.info(
                     "Early stopping 발동 - patience=%d, monitor=%s, mode=%s",
                     self.cfg.early_patience,
