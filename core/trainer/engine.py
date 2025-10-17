@@ -12,6 +12,7 @@ from accelerate import Accelerator
 from torch.utils.data import DataLoader
 from PIL import Image
 from torchvision import transforms as vision_transforms
+from tqdm.auto import tqdm
 
 from core.utils.logger import get_logger, get_train_logger
 from core.utils.seed import set_seed as set_global_seed
@@ -354,6 +355,16 @@ class Trainer:
         total_count = 0
         steps_processed = 0
 
+        total_steps = steps_limit if steps_limit > 0 else len(self.train_loader)
+        pbar = None
+        if self.accel.is_main_process:
+            pbar = tqdm(
+                total=total_steps,
+                desc=f"Epoch {epoch}",
+                leave=False,
+                dynamic_ncols=True,
+            )
+
         for step, batch in enumerate(self.train_loader, start=1):
             if not batch:
                 continue
@@ -462,6 +473,12 @@ class Trainer:
                 pred_idx = 1 if ai_score >= real_score else 0
                 total_acc += 1.0 if pred_idx == tgt else 0.0
 
+            if pbar is not None:
+                avg_loss = total_loss / max(1, total_count)
+                avg_acc = total_acc / max(1, total_count)
+                pbar.set_postfix(loss=f"{avg_loss:.4f}", acc=f"{avg_acc:.4f}")
+                pbar.update(1)
+
             steps_processed += 1
 
             if (step % max(1, self.cfg.log_interval)) == 0 and self.accel.is_main_process:
@@ -478,6 +495,9 @@ class Trainer:
 
             if steps_limit > 0 and steps_processed >= steps_limit:
                 break
+
+        if pbar is not None:
+            pbar.close()
 
         return {"loss": total_loss / max(1, total_count), "acc": total_acc / max(1, total_count)}
 
