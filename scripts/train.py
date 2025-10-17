@@ -224,6 +224,11 @@ def run_training(cfg: DictConfig) -> Path:
         inference_transform=val_infer_transform,
         train_augment=train_augment,
     )
+    try:
+        torch.autograd.set_detect_anomaly(True)
+        logger.warning("PyTorch autograd anomaly detection enabled for debugging.")
+    except Exception as exc:
+        logger.warning("Failed to enable autograd anomaly detection: %s", exc)
     final_val_metrics = trainer.fit()
 
     dataset_info = _to_dict(cfg.dataset)
