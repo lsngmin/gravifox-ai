@@ -345,6 +345,7 @@ def build_dataloaders(
                 val_dataset = ConcatDataset(val_datasets)
             val_size = len(val_dataset)
 
+            val_sampler = None
             if distributed:
                 val_sampler = DistributedSampler(
                     val_dataset,
@@ -361,14 +362,10 @@ def build_dataloaders(
                 **params,
             )
         else:
+            logger.warning("유효한 검증 데이터를 찾을 수 없어 val_loader를 생성하지 않습니다.")
             params = dict(val_loader_params)
             params.update(val_loader_kwargs)
-            val_loader = DataLoader(
-                val_dataset,
-                shuffle=False,
-                drop_last=False,
-                **params,
-            )
+            val_loader = None
 
     train_size = len(train_dataset)
     try:
