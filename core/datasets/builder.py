@@ -516,14 +516,14 @@ def build_dataloaders(
                     rank=rank,
                     shuffle=False,
                 )
-        params = dict(val_loader_params)
-        params.update(val_loader_kwargs)
-        val_loader = DataLoader(
-            val_dataset,
-            sampler=val_sampler,
-            drop_last=False,
-            **params,
-        )
+            params = dict(val_loader_params)
+            params.update(val_loader_kwargs)
+            val_loader = DataLoader(
+                val_dataset,
+                sampler=val_sampler,
+                drop_last=False,
+                **params,
+            )
         else:
             logger.warning("유효한 검증 데이터를 찾을 수 없어 val_loader를 생성하지 않습니다.")
             params = dict(val_loader_params)
