@@ -295,6 +295,8 @@ def build_dataloaders(
         loader_kwargs["prefetch_factor"] = dataset_cfg.loader.prefetch_factor
     train_loader_kwargs = dict(loader_kwargs)
     val_loader_kwargs = dict(loader_kwargs)
+    train_loader_params = dict(loader_kwargs)
+    val_loader_params = dict(loader_kwargs)
 
     train_worker_init = _get_worker_init_fn("train")
     if train_worker_init is not None:
@@ -421,11 +423,9 @@ def build_dataloaders(
     sampler = None
     use_sampler = sample_weights.numel() > 0 and not distributed
 
-    train_loader_params = dict(loader_kwargs)
     if return_raw_train_images:
         train_loader_params["collate_fn"] = _identity_collate
 
-    val_loader_params = dict(val_loader_kwargs)
     if return_raw_val_images:
         val_loader_params["collate_fn"] = _identity_collate
     if distributed:
