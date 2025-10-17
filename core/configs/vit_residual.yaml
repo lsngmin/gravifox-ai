@@ -34,7 +34,7 @@ trainer:
   label_smoothing: 0.05
   log_interval: 50
   criterion: ce
-  patch_chunk_size: 32
+  patch_chunk_size: 512
   early_stopping:
     enabled: true
     patience: 5
@@ -50,7 +50,7 @@ dataset:
   data_root: /home/smin/datasets/genimage
   source: imagenet_ai_0508_adm
   loader:
-    batch_size: 32
+    batch_size: 64
     num_workers: 32
     pin_memory: true
     persistent_workers: true
