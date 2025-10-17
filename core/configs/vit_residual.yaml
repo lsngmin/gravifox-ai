@@ -34,6 +34,7 @@ trainer:
   label_smoothing: 0.05
   log_interval: 50
   criterion: ce
+  patch_chunk_size: 32
   early_stopping:
     enabled: true
     patience: 5
