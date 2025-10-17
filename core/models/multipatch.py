@@ -172,15 +172,17 @@ def _estimate_complexity(image: Image.Image) -> float:
         return 0.0
 
     variance = float(gray.var())
-    if gray.shape[0] < 3 or gray.shape[1] < 3:
-        gradient_score = variance
-    else:
+    grad_x = 0.0
+    grad_y = 0.0
+    if gray.shape[1] > 1:
         dx = np.abs(np.diff(gray, axis=1))
+        if dx.size > 0:
+            grad_x = float(dx.mean())
+    if gray.shape[0] > 1:
         dy = np.abs(np.diff(gray, axis=0))
-        # 중앙 영역을 맞추기 위해 평균 구간을 동일 크기로 제한
-        dx_c = dx[:, :-1]
-        dy_c = dy[:-1, :]
-        gradient_score = float((dx_c + dy_c).mean())
+        if dy.size > 0:
+            grad_y = float(dy.mean())
+    gradient_score = grad_x + grad_y
 
     # 분산과 경사 정보를 결합해 로그 스케일 가중치를 적용
     combined = math.log1p(max(0.0, variance)) + math.log1p(max(0.0, gradient_score))
