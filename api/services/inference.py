@@ -302,12 +302,18 @@ class VitInferenceService:
         root = self._settings.vit_run_root
         if not root.is_dir():
             raise FileNotFoundError(f"실험 루트 디렉토리를 찾을 수 없습니다: {root}")
-        preferred_run = root / "20251011_043932"
-        if preferred_run.is_dir():
-            return preferred_run
         candidates = sorted([path for path in root.iterdir() if path.is_dir()])
         if not candidates:
             raise FileNotFoundError(f"실험 루트에 실행 기록이 없습니다: {root}")
+        preferred_tag = "20251011_043932"
+        for candidate in candidates:
+            if preferred_tag in candidate.name:
+                self._logger.info(
+                    "선호 실험 디렉터리(%s)를 선택합니다: %s",
+                    preferred_tag,
+                    candidate,
+                )
+                return candidate
         return candidates[-1]
 
     @log_time
