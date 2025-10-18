@@ -374,11 +374,10 @@ class Trainer:
             if not batch:
                 continue
 
-            sample_losses: List[torch.Tensor] = []
             sample_ai_scores: List[float] = []
             sample_real_scores: List[float] = []
             sample_targets: List[int] = []
-            batch_loss: Optional[torch.Tensor] = None
+            sample_loss_values: List[float] = []
 
             with self.accel.accumulate(self.model):
                 def _normalize_target(value: Any) -> int:
@@ -390,12 +389,7 @@ class Trainer:
                         return int(value.view(-1)[0].item())
                     return int(value)
 
-                stacked_patches: List[torch.Tensor] = []
-                stacked_targets: List[torch.Tensor] = []
-                stacked_weights: List[float] = []
-                patch_sample_indices: List[int] = []
-                sample_label_indices: List[int] = []
-                processed_sample_idx = 0
+                sample_entries: List[Dict[str, Any]] = []
 
                 iterable_batch = batch if isinstance(batch, (list, tuple)) else [batch]
 
@@ -509,58 +503,59 @@ class Trainer:
                     if not sample_weights:
                         sample_weights = [1.0 for _ in range(patch_tensor_cpu.size(0))]
 
-                    stacked_patches.append(patch_tensor_cpu)
-                    stacked_targets.append(patch_targets_cpu)
-                    stacked_weights.extend(sample_weights)
-                    patch_sample_indices.extend([processed_sample_idx] * patch_tensor_cpu.size(0))
-                    sample_label_indices.append(int(patch_targets_cpu[0].item()))
-                    processed_sample_idx += 1
-
-                if not stacked_patches:
-                    continue
-
-                batch_patch_tensor = torch.cat(stacked_patches, dim=0)
-                batch_patch_targets = torch.cat(stacked_targets, dim=0)
-                total_patch_count = batch_patch_tensor.size(0)
-                weights_tensor = torch.tensor(stacked_weights[:total_patch_count], dtype=torch.float32)
-                sample_index_tensor = torch.tensor(patch_sample_indices[:total_patch_count], dtype=torch.long)
-
-                patch_loss_accum: Optional[torch.Tensor] = None
-                logits_cpu_chunks: List[torch.Tensor] = []
-
-                offset = 0
-                for chunk_cpu in torch.split(batch_patch_tensor, self.patch_chunk_size):
-                    chunk_size = chunk_cpu.size(0)
-                    chunk = chunk_cpu.to(self.accel.device, non_blocking=True)
-                    chunk_targets = batch_patch_targets[offset : offset + chunk_size].to(
-                        self.accel.device,
-                        non_blocking=True,
+                    sample_entries.append(
+                        {
+                            "patches": patch_tensor_cpu,
+                            "targets": patch_targets_cpu,
+                            "weights": sample_weights,
+                            "target_idx": int(patch_targets_cpu[0].item()),
+                        }
                     )
-                    offset += chunk_size
-                    with self.accel.autocast():
-                        chunk_logits = self.model(chunk)
-                        chunk_loss = self.criterion(chunk_logits, chunk_targets)
-                    weight = float(chunk_size) / float(total_patch_count)
-                    weighted_chunk_loss = chunk_loss * weight
-                    if patch_loss_accum is None:
-                        patch_loss_accum = weighted_chunk_loss
-                    else:
-                        patch_loss_accum = patch_loss_accum + weighted_chunk_loss
-                    logits_cpu_chunks.append(chunk_logits.detach().cpu())
 
-                if patch_loss_accum is None:
+                sample_count = len(sample_entries)
+                if sample_count == 0:
                     continue
-                sample_losses.append(patch_loss_accum)
 
-                patch_probs = torch.softmax(torch.cat(logits_cpu_chunks, dim=0), dim=1)
-                weights_np = weights_tensor.tolist()
+                for entry in sample_entries:
+                    patch_tensor_cpu = entry["patches"]
+                    targets_cpu = entry["targets"]
+                    weight_list = entry["weights"]
+                    target_idx = entry["target_idx"]
 
-                for sample_idx, target_idx in enumerate(sample_label_indices):
-                    mask = sample_index_tensor == sample_idx
-                    if not bool(mask.any()):
+                    total_patch_count = patch_tensor_cpu.size(0)
+                    if total_patch_count == 0:
                         continue
-                    sample_probs = patch_probs[mask]
-                    sample_weights = [weights_np[i] for i, m in enumerate(mask.tolist()) if m]
+
+                    if not weight_list or len(weight_list) != total_patch_count:
+                        weight_list = [1.0 for _ in range(total_patch_count)]
+
+                    chunk_probs_cpu: List[torch.Tensor] = []
+                    offset = 0
+                    sample_loss_value = 0.0
+
+                    for chunk_iter, chunk_cpu in enumerate(torch.split(patch_tensor_cpu, self.patch_chunk_size)):
+                        chunk_size = chunk_cpu.size(0)
+                        chunk = chunk_cpu.to(self.accel.device, non_blocking=True)
+                        chunk_targets = targets_cpu[offset : offset + chunk_size].to(
+                            self.accel.device,
+                            non_blocking=True,
+                        )
+                        offset += chunk_size
+
+                        with self.accel.autocast():
+                            chunk_logits = self.model(chunk)
+                            chunk_loss = self.criterion(chunk_logits, chunk_targets)
+
+                        chunk_probs_cpu.append(torch.softmax(chunk_logits.detach().cpu(), dim=1))
+
+                        chunk_weight = float(chunk_size) / float(total_patch_count)
+                        sample_loss_value += float(chunk_loss.detach().item() * chunk_weight)
+                        scaled_loss = chunk_loss * (chunk_weight / float(sample_count))
+                        self.accel.backward(scaled_loss)
+
+                    sample_loss_values.append(sample_loss_value)
+
+                    sample_probs = torch.cat(chunk_probs_cpu, dim=0)
                     patch_scores = [
                         {"real": float(prob[0]), "ai": float(prob[1])}
                         for prob in sample_probs
@@ -568,27 +563,25 @@ class Trainer:
                     aggregated = aggregate_scores(
                         patch_scores,
                         method=self.inference_aggregate,
-                        weights=sample_weights if sample_weights else None,
+                        weights=weight_list if weight_list else None,
                     )
                     sample_ai_scores.append(float(aggregated["ai"]))
                     sample_real_scores.append(float(aggregated["real"]))
                     sample_targets.append(target_idx)
 
-                if not sample_losses:
+                if not sample_loss_values:
                     continue
 
-                batch_loss = torch.stack(sample_losses).mean()
-                self.accel.backward(batch_loss)
                 if self.accel.sync_gradients and self.cfg.max_grad_norm > 0:
                     self.accel.clip_grad_norm_(self.model.parameters(), max_norm=self.cfg.max_grad_norm)
                 self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
 
-            if batch_loss is None or not sample_targets:
+            if not sample_targets:
                 continue
 
             sample_count = len(sample_targets)
-            total_loss += batch_loss.detach().item() * sample_count
+            total_loss += sum(sample_loss_values)
             for ai_score, real_score, tgt in zip(sample_ai_scores, sample_real_scores, sample_targets):
                 total_count += 1
                 pred_idx = 1 if ai_score >= real_score else 0
