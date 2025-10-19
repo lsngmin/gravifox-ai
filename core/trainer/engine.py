@@ -527,6 +527,8 @@ class Trainer:
         for batch in self.val_loader:
             if not batch:
                 continue
+            batch_logits_gpu: List[torch.Tensor] = []
+            batch_targets_gpu: List[int] = []
             for image, target in batch:
                 if isinstance(image, torch.Tensor):
                     image = self._to_pil(image.cpu())
@@ -545,12 +547,18 @@ class Trainer:
                     total_acc += 1.0
                 total_count += 1
 
-                gathered_logits = self.accel.gather_for_metrics(logits_tensor.unsqueeze(0).detach().cpu())
-                gathered_targets = self.accel.gather_for_metrics(
-                    torch.tensor([target_idx], dtype=torch.long)
+                batch_logits_gpu.append(logits_tensor.unsqueeze(0))
+                batch_targets_gpu.append(target_idx)
+
+            if batch_logits_gpu:
+                logits_batch = torch.cat(batch_logits_gpu, dim=0)
+                targets_batch = torch.tensor(
+                    batch_targets_gpu, device=self.accel.device, dtype=torch.long
                 )
+                gathered_logits = self.accel.gather_for_metrics(logits_batch)
+                gathered_targets = self.accel.gather_for_metrics(targets_batch)
                 if gathered_logits.numel() > 0:
-                    logits_collector.append(gathered_logits)
+                    logits_collector.append(gathered_logits.cpu())
                     targets_collector.append(gathered_targets.cpu())
 
             if pbar is not None:
