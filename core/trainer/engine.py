@@ -545,9 +545,13 @@ class Trainer:
                     total_acc += 1.0
                 total_count += 1
 
-                logits_collector.append(self.accel.gather(logits_tensor.unsqueeze(0)))
-                target_tensor = torch.tensor([target_idx], device=self.accel.device, dtype=torch.long)
-                targets_collector.append(self.accel.gather(target_tensor))
+                gathered_logits = self.accel.gather_for_metrics(logits_tensor.unsqueeze(0).detach().cpu())
+                gathered_targets = self.accel.gather_for_metrics(
+                    torch.tensor([target_idx], dtype=torch.long)
+                )
+                if gathered_logits.numel() > 0:
+                    logits_collector.append(gathered_logits)
+                    targets_collector.append(gathered_targets.cpu())
 
             if pbar is not None:
                 avg_loss = total_loss / max(1, total_count)
@@ -558,10 +562,20 @@ class Trainer:
         if pbar is not None:
             pbar.close()
 
-        metrics = {"loss": total_loss / max(1, total_count), "acc": total_acc / max(1, total_count)}
+        summary_tensor = torch.tensor(
+            [total_loss, total_acc, total_count],
+            device=self.accel.device,
+            dtype=torch.float64,
+        )
+        summary_tensor = self.accel.reduce(summary_tensor, reduction="sum")
+        total_loss = float(summary_tensor[0].item())
+        total_acc = float(summary_tensor[1].item())
+        total_count = float(summary_tensor[2].item())
+
+        metrics = {"loss": total_loss / max(1.0, total_count), "acc": total_acc / max(1.0, total_count)}
         if logits_collector:
             logits_cat = torch.cat(logits_collector)
-            targets_cat = torch.cat(targets_collector)
+            targets_cat = torch.cat(targets_collector).long()
             bundle = classification_metrics(logits_cat, targets_cat)
             bundle.loss = metrics["loss"]
             bundle.acc = metrics["acc"]
