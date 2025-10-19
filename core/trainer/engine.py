@@ -512,11 +512,50 @@ class Trainer:
                         }
                     )
 
-                sample_count = len(sample_entries)
+                valid_entries = [
+                    entry for entry in sample_entries if isinstance(entry.get("patches"), torch.Tensor) and entry["patches"].size(0) > 0
+                ]
+                sample_count = len(valid_entries)
+
+                count_tensor = torch.tensor([sample_count], device=self.accel.device, dtype=torch.long)
+                try:
+                    gathered_counts = self.accel.gather(count_tensor)
+                except Exception:
+                    gathered_counts = count_tensor
+                gathered_counts = gathered_counts.view(-1)
+                global_min = int(gathered_counts.min().item())
+                global_max = int(gathered_counts.max().item())
+
+                if global_max == 0:
+                    if pbar is not None:
+                        pbar.update(1)
+                    steps_processed += 1
+                    self.accel.wait_for_everyone()
+                    continue
+
+                if global_min == 0:
+                    truncate_count = max(global_min, 0)
+                else:
+                    truncate_count = global_min
+
+                if truncate_count <= 0:
+                    if pbar is not None:
+                        pbar.update(1)
+                    steps_processed += 1
+                    self.accel.wait_for_everyone()
+                    continue
+
+                if sample_count > truncate_count:
+                    valid_entries = valid_entries[:truncate_count]
+                    sample_count = truncate_count
+
+                if global_max != global_min:
+                    sample_count = truncate_count
+
                 if sample_count == 0:
                     continue
 
-                for entry in sample_entries:
+                for entry_idx, entry in enumerate(valid_entries):
                     patch_tensor_cpu = entry["patches"]
                     targets_cpu = entry["targets"]
                     weight_list = entry["weights"]
@@ -532,6 +571,7 @@ class Trainer:
                     chunk_probs_cpu: List[torch.Tensor] = []
                     offset = 0
                     sample_loss_value = 0.0
+                    sample_loss_tensor: Optional[torch.Tensor] = None
 
                     for chunk_iter, chunk_cpu in enumerate(torch.split(patch_tensor_cpu, self.patch_chunk_size)):
                         chunk_size = chunk_cpu.size(0)
@@ -550,10 +590,21 @@ class Trainer:
 
                         chunk_weight = float(chunk_size) / float(total_patch_count)
                         sample_loss_value += float(chunk_loss.detach().item() * chunk_weight)
-                        scaled_loss = chunk_loss * (chunk_weight / float(sample_count))
-                        self.accel.backward(scaled_loss)
+
+                        weighted_chunk_loss = chunk_loss * chunk_weight
+                        if sample_loss_tensor is None:
+                            sample_loss_tensor = weighted_chunk_loss
+                        else:
+                            sample_loss_tensor = sample_loss_tensor + weighted_chunk_loss
+
+                    if sample_loss_tensor is None:
+                        continue
 
                     sample_loss_values.append(sample_loss_value)
+
+                    loss_to_backprop = sample_loss_tensor / float(sample_count)
+                    retain = (entry_idx + 1) < sample_count
+                    self.accel.backward(loss_to_backprop, retain_graph=retain)
 
                     sample_probs = torch.cat(chunk_probs_cpu, dim=0)
                     patch_scores = [
