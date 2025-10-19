@@ -527,39 +527,91 @@ class Trainer:
         for batch in self.val_loader:
             if not batch:
                 continue
-            batch_logits_gpu: List[torch.Tensor] = []
-            batch_targets_gpu: List[int] = []
-            for image, target in batch:
-                if isinstance(image, torch.Tensor):
-                    image = self._to_pil(image.cpu())
-                elif not isinstance(image, Image.Image):
-                    raise TypeError(f"Unsupported validation sample type: {type(image)}")
-                probs_tensor, logits_tensor = self._evaluate_validation_image(image)
-                if isinstance(target, torch.Tensor):
-                    target_idx = int(target.item())
-                else:
-                    target_idx = int(target)
+            # Standard (batched tensor) path
+            if (
+                isinstance(batch, (list, tuple))
+                and len(batch) >= 2
+                and isinstance(batch[0], torch.Tensor)
+            ):
+                images = batch[0]
+                targets = batch[1]
+                if images.ndim == 3:
+                    images = images.unsqueeze(0)
+                if images.ndim != 4:
+                    raise ValueError(f"Unsupported validation image tensor shape: {images.shape}")
 
-                loss = -torch.log(torch.clamp(probs_tensor[target_idx], min=eps))
-                total_loss += float(loss.item())
-                pred_idx = int(torch.argmax(probs_tensor).item())
-                if pred_idx == target_idx:
-                    total_acc += 1.0
-                total_count += 1
+                if not isinstance(targets, torch.Tensor):
+                    targets = torch.tensor(targets, dtype=torch.long)
+                targets = targets.to(self.accel.device, non_blocking=True)
+                images = images.to(self.accel.device, non_blocking=True)
 
-                batch_logits_gpu.append(logits_tensor.unsqueeze(0))
-                batch_targets_gpu.append(target_idx)
+                with self.accel.autocast():
+                    logits = self.model(images)
+                    loss_tensor = torch.nn.functional.cross_entropy(logits, targets)
 
-            if batch_logits_gpu:
-                logits_batch = torch.cat(batch_logits_gpu, dim=0)
-                targets_batch = torch.tensor(
-                    batch_targets_gpu, device=self.accel.device, dtype=torch.long
-                )
-                gathered_logits = self.accel.gather_for_metrics(logits_batch)
-                gathered_targets = self.accel.gather_for_metrics(targets_batch)
+                batch_loss = float(loss_tensor.detach().item())
+                batch_size = targets.size(0)
+                preds = torch.argmax(logits, dim=1)
+                correct = float((preds == targets).sum().item())
+
+                total_loss += batch_loss * batch_size
+                total_acc += correct
+                total_count += float(batch_size)
+
+                gathered_logits = self.accel.gather_for_metrics(logits.detach())
+                gathered_targets = self.accel.gather_for_metrics(targets)
                 if gathered_logits.numel() > 0:
                     logits_collector.append(gathered_logits.cpu())
                     targets_collector.append(gathered_targets.cpu())
+            else:
+                batch_logits_gpu: List[torch.Tensor] = []
+                batch_targets_gpu: List[int] = []
+                # Fallback path: raw images
+                iterable = batch if isinstance(batch, (list, tuple)) else [batch]
+                for item in iterable:
+                    if not item:
+                        continue
+                    if isinstance(item, (tuple, list)) and len(item) >= 2:
+                        image, target = item[0], item[1]
+                    else:
+                        image, target = item, 0
+
+                    if isinstance(image, torch.Tensor):
+                        if image.ndim == 4:
+                            image = self._to_pil(image[0].cpu())
+                        elif image.ndim == 3:
+                            image = self._to_pil(image.cpu())
+                        else:
+                            continue
+                    if not isinstance(image, Image.Image):
+                        continue
+
+                    probs_tensor, logits_tensor = self._evaluate_validation_image(image)
+                    if isinstance(target, torch.Tensor):
+                        target_idx = int(target.item())
+                    else:
+                        target_idx = int(target)
+
+                    loss = -torch.log(torch.clamp(probs_tensor[target_idx], min=eps))
+                    total_loss += float(loss.item())
+                    pred_idx = int(torch.argmax(probs_tensor).item())
+                    if pred_idx == target_idx:
+                        total_acc += 1.0
+                    total_count += 1.0
+
+                    batch_logits_gpu.append(logits_tensor.unsqueeze(0))
+                    batch_targets_gpu.append(target_idx)
+
+                if batch_logits_gpu:
+                    logits_batch = torch.cat(batch_logits_gpu, dim=0).to(self.accel.device)
+                    targets_batch = torch.tensor(
+                        batch_targets_gpu, device=self.accel.device, dtype=torch.long
+                    )
+                    gathered_logits = self.accel.gather_for_metrics(logits_batch)
+                    gathered_targets = self.accel.gather_for_metrics(targets_batch)
+                    if gathered_logits.numel() > 0:
+                        logits_collector.append(gathered_logits.cpu())
+                        targets_collector.append(gathered_targets.cpu())
 
             if pbar is not None:
                 avg_loss = total_loss / max(1, total_count)
