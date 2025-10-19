@@ -9,6 +9,7 @@ import math
 import os
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
 from PIL import Image
@@ -517,20 +518,21 @@ class Trainer:
                 ]
                 sample_count = len(valid_entries)
 
-                count_tensor = torch.tensor([sample_count], device=self.accel.device, dtype=torch.long)
-                try:
-                    gathered_counts = self.accel.gather(count_tensor)
-                except Exception:
-                    gathered_counts = count_tensor
-                gathered_counts = gathered_counts.view(-1)
-                global_min = int(gathered_counts.min().item())
-                global_max = int(gathered_counts.max().item())
+                if dist.is_available() and dist.is_initialized():
+                    min_tensor = torch.tensor(sample_count, device=self.accel.device, dtype=torch.long)
+                    max_tensor = torch.tensor(sample_count, device=self.accel.device, dtype=torch.long)
+                    dist.all_reduce(min_tensor, op=dist.ReduceOp.MIN)
+                    dist.all_reduce(max_tensor, op=dist.ReduceOp.MAX)
+                    global_min = int(min_tensor.item())
+                    global_max = int(max_tensor.item())
+                else:
+                    global_min = sample_count
+                    global_max = sample_count
 
                 if global_max == 0:
                     if pbar is not None:
                         pbar.update(1)
                     steps_processed += 1
-                    self.accel.wait_for_everyone()
                     continue
 
                 if global_min == 0:
@@ -542,7 +544,6 @@ class Trainer:
                     if pbar is not None:
                         pbar.update(1)
                     steps_processed += 1
-                    self.accel.wait_for_everyone()
                     continue
 
                 if sample_count > truncate_count:
