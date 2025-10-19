@@ -373,10 +373,9 @@ class Trainer:
             if not batch:
                 continue
 
-            sample_ai_scores: List[float] = []
-            sample_real_scores: List[float] = []
-            sample_targets: List[int] = []
-            sample_loss_values: List[float] = []
+            batch_loss_total = 0.0
+            batch_correct = 0.0
+            batch_samples = 0
 
             with self.accel.accumulate(self.model):
                 def _normalize_target(value: Any) -> int:
@@ -388,7 +387,9 @@ class Trainer:
                         return int(value.view(-1)[0].item())
                     return int(value)
 
-                valid_samples: List[Tuple[torch.Tensor, torch.Tensor, int]] = []
+                tensors_for_batch: List[torch.Tensor] = []
+                targets_list: List[int] = []
+
                 iterable_batch = batch if isinstance(batch, (list, tuple)) else [batch]
 
                 for sample in iterable_batch:
@@ -397,22 +398,18 @@ class Trainer:
 
                     primary = sample
                     target_idx = 0
-                    if isinstance(sample, (tuple, list)) and sample:
+                    if isinstance(sample, (tuple, list)) and len(sample) > 0:
                         primary = sample[0]
                         if len(sample) > 1:
                             target_idx = _normalize_target(sample[1])
 
-                    patch_tensor_cpu: Optional[torch.Tensor] = None
-                    patch_targets_cpu: Optional[torch.Tensor] = None
-
-                    if isinstance(primary, torch.Tensor) and primary.dim() == 4:
-                        patch_tensor_cpu = primary
-                        patch_targets_cpu = torch.full(
-                            (patch_tensor_cpu.size(0),),
-                            target_idx,
-                            device="cpu",
-                            dtype=torch.long,
-                        )
+                    if isinstance(primary, torch.Tensor):
+                        if primary.dim() == 4:
+                            tensor = primary[0]
+                        elif primary.dim() == 3:
+                            tensor = primary
+                        else:
+                            continue
                     else:
                         image = primary
                         if isinstance(image, torch.Tensor):
@@ -422,121 +419,59 @@ class Trainer:
                                 image = self._to_pil(image[0].cpu())
                             else:
                                 continue
-                        elif not isinstance(image, Image.Image):
+                        if not isinstance(image, Image.Image):
                             continue
 
                         if self.train_augment is not None:
                             augmented = self.train_augment(image)
                             if isinstance(augmented, Image.Image):
                                 image = augmented
-                            elif isinstance(augmented, torch.Tensor):
-                                if augmented.dim() == 3:
-                                    image = self._to_pil(augmented.cpu())
-                                elif augmented.dim() == 4:
-                                    image = self._to_pil(augmented[0].cpu())
-                                else:
-                                    continue
-                            else:
-                                continue
+                            elif isinstance(augmented, torch.Tensor) and augmented.dim() == 3:
+                                image = self._to_pil(augmented.cpu())
+                        tensor = self.inference_transform(image)
 
-                        patch_samples = generate_patches(
-                            image,
-                            sizes=self.inference_scales,
-                            n_patches=self.inference_n_patches,
-                            min_cell_size=self.inference_cell_sizes,
-                            overlap=self.inference_overlap,
-                            jitter=self.inference_jitter,
-                            max_patches=self.inference_max_patches,
-                            priority_regions=estimate_priority_regions(image),
-                        )
-
-                        tensors = []
-                        if patch_samples:
-                            for patch_sample in patch_samples:
-                                patch_img = (
-                                    patch_sample.image
-                                    if patch_sample.image.mode == "RGB"
-                                    else patch_sample.image.convert("RGB")
-                                )
-                                tensors.append(self.inference_transform(patch_img).unsqueeze(0))
-                        else:
-                            tensors.append(self.inference_transform(image).unsqueeze(0))
-
-                        patch_tensor_cpu = torch.cat(tensors, dim=0)
-                        patch_targets_cpu = torch.full(
-                            (patch_tensor_cpu.size(0),),
-                            target_idx,
-                            device="cpu",
-                            dtype=torch.long,
-                        )
-
-                    if patch_tensor_cpu is None or patch_tensor_cpu.size(0) == 0:
+                    if not isinstance(tensor, torch.Tensor) or tensor.dim() != 3:
                         continue
 
-                    valid_samples.append((patch_tensor_cpu, patch_targets_cpu, target_idx))
+                    tensors_for_batch.append(tensor.unsqueeze(0))
+                    targets_list.append(target_idx)
 
-                sample_count = len(valid_samples)
-                if sample_count == 0:
+                if not tensors_for_batch:
                     continue
 
-                for sample_idx, (patch_tensor_cpu, targets_cpu, target_idx) in enumerate(valid_samples):
-                    total_patch_count = patch_tensor_cpu.size(0)
-                    if total_patch_count == 0:
-                        continue
+                batch_tensor = torch.cat(tensors_for_batch, dim=0).to(
+                    self.accel.device, non_blocking=True
+                )
+                targets_tensor = torch.tensor(
+                    targets_list, device=self.accel.device, dtype=torch.long
+                )
 
-                    sample_loss_value = 0.0
-                    chunk_probs_cpu: List[torch.Tensor] = []
-                    offset = 0
+                with self.accel.autocast():
+                    logits = self.model(batch_tensor)
+                    loss = self.criterion(logits, targets_tensor)
 
-                    for chunk_cpu in torch.split(patch_tensor_cpu, self.patch_chunk_size):
-                        chunk_size = chunk_cpu.size(0)
-                        chunk = chunk_cpu.to(self.accel.device, non_blocking=True)
-                        chunk_targets = targets_cpu[offset : offset + chunk_size].to(
-                            self.accel.device,
-                            non_blocking=True,
-                        )
-                        offset += chunk_size
+                self.accel.backward(loss)
 
-                        with self.accel.autocast():
-                            chunk_logits = self.model(chunk)
-                            chunk_loss = self.criterion(chunk_logits, chunk_targets)
+                loss_value = float(loss.detach().item())
+                current_samples = targets_tensor.size(0)
+                probs = torch.softmax(logits.detach(), dim=1)
+                preds = torch.argmax(probs, dim=1)
 
-                        chunk_weight = float(chunk_size) / float(total_patch_count)
-                        sample_loss_value += float(chunk_loss.detach().item() * chunk_weight)
-
-                        scaled_loss = chunk_loss * (chunk_weight / float(sample_count))
-                        is_last_sample = (sample_idx + 1) == sample_count
-                        is_last_chunk = offset >= total_patch_count
-                        retain = not (is_last_sample and is_last_chunk)
-                        self.accel.backward(scaled_loss, retain_graph=retain)
-
-                        chunk_probs_cpu.append(torch.softmax(chunk_logits.detach().cpu(), dim=1))
-
-                    sample_loss_values.append(sample_loss_value)
-
-                    sample_probs = torch.cat(chunk_probs_cpu, dim=0)
-                    mean_probs = sample_probs.mean(dim=0)
-                    sample_ai_scores.append(float(mean_probs[1]))
-                    sample_real_scores.append(float(mean_probs[0]))
-                    sample_targets.append(target_idx)
-
-                if not sample_loss_values:
-                    continue
+                batch_loss_total += loss_value * current_samples
+                batch_samples += current_samples
+                batch_correct += float((preds == targets_tensor).sum().item())
 
                 if self.accel.sync_gradients and self.cfg.max_grad_norm > 0:
                     self.accel.clip_grad_norm_(self.model.parameters(), max_norm=self.cfg.max_grad_norm)
                 self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
 
-            if not sample_targets:
+            if batch_samples == 0:
                 continue
 
-            sample_count = len(sample_targets)
-            total_loss += sum(sample_loss_values)
-            for ai_score, real_score, tgt in zip(sample_ai_scores, sample_real_scores, sample_targets):
-                total_count += 1
-                pred_idx = 1 if ai_score >= real_score else 0
-                total_acc += 1.0 if pred_idx == tgt else 0.0
+            total_loss += batch_loss_total
+            total_count += batch_samples
+            total_acc += batch_correct
 
             if pbar is not None:
                 avg_loss = total_loss / max(1, total_count)
