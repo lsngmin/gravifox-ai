@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Optional, Sequence, Tuple, List, Any
-from types import SimpleNamespace
 
 import math
 import os
@@ -389,68 +388,42 @@ class Trainer:
                         return int(value.view(-1)[0].item())
                     return int(value)
 
-                sample_entries: List[Dict[str, Any]] = []
-
+                valid_samples: List[Tuple[torch.Tensor, torch.Tensor, int]] = []
                 iterable_batch = batch if isinstance(batch, (list, tuple)) else [batch]
 
-                for sample_idx, sample in enumerate(iterable_batch):
+                for sample in iterable_batch:
                     if sample is None:
                         continue
 
-                    maybe_tensor = sample[0] if isinstance(sample, (tuple, list)) and sample else sample
+                    primary = sample
+                    target_idx = 0
+                    if isinstance(sample, (tuple, list)) and sample:
+                        primary = sample[0]
+                        if len(sample) > 1:
+                            target_idx = _normalize_target(sample[1])
+
                     patch_tensor_cpu: Optional[torch.Tensor] = None
                     patch_targets_cpu: Optional[torch.Tensor] = None
-                    sample_weights: List[float] = []
 
-                    if isinstance(maybe_tensor, torch.Tensor) and maybe_tensor.dim() == 4:
-                        patch_tensor_cpu = maybe_tensor
-                        patch_count = patch_tensor_cpu.size(0)
-                        target_obj = sample[-1] if isinstance(sample, (tuple, list)) and len(sample) > 1 else 0
-                        target_idx = _normalize_target(target_obj)
+                    if isinstance(primary, torch.Tensor) and primary.dim() == 4:
+                        patch_tensor_cpu = primary
                         patch_targets_cpu = torch.full(
-                            (patch_count,),
+                            (patch_tensor_cpu.size(0),),
                             target_idx,
                             device="cpu",
                             dtype=torch.long,
                         )
-                        metadata_seq = None
-                        if isinstance(sample, (tuple, list)):
-                            if len(sample) >= 3:
-                                metadata_seq = sample[1]
-                            elif len(sample) == 2 and isinstance(sample[1], (list, tuple)):
-                                metadata_seq = sample[1]
-                        if isinstance(metadata_seq, (list, tuple)):
-                            dict_seq = [meta for meta in metadata_seq if isinstance(meta, dict)]
-                            if dict_seq and all("weight" in meta for meta in dict_seq):
-                                sample_weights = [float(meta.get("weight", 1.0)) for meta in dict_seq]
-                            else:
-                                weight_infos = [
-                                    SimpleNamespace(
-                                        priority=bool(meta.get("priority", False)),
-                                        complexity=float(meta.get("complexity", 0.0)),
-                                        scale_index=int(meta.get("scale_index", 0)),
-                                    )
-                                    for meta in dict_seq
-                                ]
-                                if weight_infos:
-                                    sample_weights = compute_patch_weights(weight_infos)
                     else:
-                        if isinstance(sample, (tuple, list)) and sample:
-                            image = sample[0]
-                            target_idx = _normalize_target(sample[1] if len(sample) > 1 else 0)
-                        else:
-                            image = sample
-                            target_idx = 0
-
+                        image = primary
                         if isinstance(image, torch.Tensor):
                             if image.dim() == 3:
                                 image = self._to_pil(image.cpu())
                             elif image.dim() == 4:
                                 image = self._to_pil(image[0].cpu())
                             else:
-                                raise ValueError(f"Unsupported tensor shape for image: {image.shape}")
+                                continue
                         elif not isinstance(image, Image.Image):
-                            raise TypeError(f"Unsupported training sample type: {type(image)}")
+                            continue
 
                         if self.train_augment is not None:
                             augmented = self.train_augment(image)
@@ -462,11 +435,10 @@ class Trainer:
                                 elif augmented.dim() == 4:
                                     image = self._to_pil(augmented[0].cpu())
                                 else:
-                                    raise ValueError("train_augment returned tensor with invalid dimensions")
+                                    continue
                             else:
-                                raise TypeError("train_augment must return PIL.Image or Tensor")
+                                continue
 
-                        priority_regions = estimate_priority_regions(image)
                         patch_samples = generate_patches(
                             image,
                             sizes=self.inference_scales,
@@ -475,20 +447,11 @@ class Trainer:
                             overlap=self.inference_overlap,
                             jitter=self.inference_jitter,
                             max_patches=self.inference_max_patches,
-                            priority_regions=priority_regions,
+                            priority_regions=estimate_priority_regions(image),
                         )
-                        if not patch_samples:
-                            fallback_tensor = self.inference_transform(image).unsqueeze(0)
-                            patch_tensor_cpu = fallback_tensor
-                            patch_targets_cpu = torch.full(
-                                (1,),
-                                target_idx,
-                                device="cpu",
-                                dtype=torch.long,
-                            )
-                            sample_weights = [1.0]
-                        else:
-                            tensors = []
+
+                        tensors = []
+                        if patch_samples:
                             for patch_sample in patch_samples:
                                 patch_img = (
                                     patch_sample.image
@@ -496,57 +459,36 @@ class Trainer:
                                     else patch_sample.image.convert("RGB")
                                 )
                                 tensors.append(self.inference_transform(patch_img).unsqueeze(0))
-                            patch_tensor_cpu = torch.cat(tensors, dim=0)
-                            patch_targets_cpu = torch.full(
-                                (patch_tensor_cpu.size(0),),
-                                target_idx,
-                                device="cpu",
-                                dtype=torch.long,
-                            )
-                            sample_weights = compute_patch_weights(patch_samples)
+                        else:
+                            tensors.append(self.inference_transform(image).unsqueeze(0))
 
-                    if patch_tensor_cpu is None or patch_targets_cpu is None or patch_tensor_cpu.size(0) == 0:
+                        patch_tensor_cpu = torch.cat(tensors, dim=0)
+                        patch_targets_cpu = torch.full(
+                            (patch_tensor_cpu.size(0),),
+                            target_idx,
+                            device="cpu",
+                            dtype=torch.long,
+                        )
+
+                    if patch_tensor_cpu is None or patch_tensor_cpu.size(0) == 0:
                         continue
 
-                    if not sample_weights:
-                        sample_weights = [1.0 for _ in range(patch_tensor_cpu.size(0))]
+                    valid_samples.append((patch_tensor_cpu, patch_targets_cpu, target_idx))
 
-                    sample_entries.append(
-                        {
-                            "patches": patch_tensor_cpu,
-                            "targets": patch_targets_cpu,
-                            "weights": sample_weights,
-                            "target_idx": int(patch_targets_cpu[0].item()),
-                        }
-                    )
-
-                valid_entries = [
-                    entry for entry in sample_entries if isinstance(entry.get("patches"), torch.Tensor) and entry["patches"].size(0) > 0
-                ]
-                sample_count = len(valid_entries)
-
+                sample_count = len(valid_samples)
                 if sample_count == 0:
                     continue
 
-                for entry_idx, entry in enumerate(valid_entries):
-                    patch_tensor_cpu = entry["patches"]
-                    targets_cpu = entry["targets"]
-                    weight_list = entry["weights"]
-                    target_idx = entry["target_idx"]
-
+                for sample_idx, (patch_tensor_cpu, targets_cpu, target_idx) in enumerate(valid_samples):
                     total_patch_count = patch_tensor_cpu.size(0)
                     if total_patch_count == 0:
                         continue
 
-                    if not weight_list or len(weight_list) != total_patch_count:
-                        weight_list = [1.0 for _ in range(total_patch_count)]
-
+                    sample_loss_value = 0.0
                     chunk_probs_cpu: List[torch.Tensor] = []
                     offset = 0
-                    sample_loss_value = 0.0
-                    sample_loss_tensor: Optional[torch.Tensor] = None
 
-                    for chunk_iter, chunk_cpu in enumerate(torch.split(patch_tensor_cpu, self.patch_chunk_size)):
+                    for chunk_cpu in torch.split(patch_tensor_cpu, self.patch_chunk_size):
                         chunk_size = chunk_cpu.size(0)
                         chunk = chunk_cpu.to(self.accel.device, non_blocking=True)
                         chunk_targets = targets_cpu[offset : offset + chunk_size].to(
@@ -559,38 +501,23 @@ class Trainer:
                             chunk_logits = self.model(chunk)
                             chunk_loss = self.criterion(chunk_logits, chunk_targets)
 
-                        chunk_probs_cpu.append(torch.softmax(chunk_logits.detach().cpu(), dim=1))
-
                         chunk_weight = float(chunk_size) / float(total_patch_count)
                         sample_loss_value += float(chunk_loss.detach().item() * chunk_weight)
 
-                        weighted_chunk_loss = chunk_loss * chunk_weight
-                        if sample_loss_tensor is None:
-                            sample_loss_tensor = weighted_chunk_loss
-                        else:
-                            sample_loss_tensor = sample_loss_tensor + weighted_chunk_loss
+                        scaled_loss = chunk_loss * (chunk_weight / float(sample_count))
+                        is_last_sample = (sample_idx + 1) == sample_count
+                        is_last_chunk = offset >= total_patch_count
+                        retain = not (is_last_sample and is_last_chunk)
+                        self.accel.backward(scaled_loss, retain_graph=retain)
 
-                    if sample_loss_tensor is None:
-                        continue
+                        chunk_probs_cpu.append(torch.softmax(chunk_logits.detach().cpu(), dim=1))
 
                     sample_loss_values.append(sample_loss_value)
 
-                    loss_to_backprop = sample_loss_tensor / float(sample_count)
-                    retain = (entry_idx + 1) < sample_count
-                    self.accel.backward(loss_to_backprop, retain_graph=retain)
-
                     sample_probs = torch.cat(chunk_probs_cpu, dim=0)
-                    patch_scores = [
-                        {"real": float(prob[0]), "ai": float(prob[1])}
-                        for prob in sample_probs
-                    ]
-                    aggregated = aggregate_scores(
-                        patch_scores,
-                        method=self.inference_aggregate,
-                        weights=weight_list if weight_list else None,
-                    )
-                    sample_ai_scores.append(float(aggregated["ai"]))
-                    sample_real_scores.append(float(aggregated["real"]))
+                    mean_probs = sample_probs.mean(dim=0)
+                    sample_ai_scores.append(float(mean_probs[1]))
+                    sample_real_scores.append(float(mean_probs[0]))
                     sample_targets.append(target_idx)
 
                 if not sample_loss_values:
