@@ -9,7 +9,6 @@ import math
 import os
 import torch
 import torch.nn as nn
-import torch.distributed as dist
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
 from PIL import Image
@@ -479,24 +478,32 @@ class Trainer:
                             priority_regions=priority_regions,
                         )
                         if not patch_samples:
-                            continue
-
-                        tensors = []
-                        for patch_sample in patch_samples:
-                            patch_img = (
-                                patch_sample.image
-                                if patch_sample.image.mode == "RGB"
-                                else patch_sample.image.convert("RGB")
+                            fallback_tensor = self.inference_transform(image).unsqueeze(0)
+                            patch_tensor_cpu = fallback_tensor
+                            patch_targets_cpu = torch.full(
+                                (1,),
+                                target_idx,
+                                device="cpu",
+                                dtype=torch.long,
                             )
-                            tensors.append(self.inference_transform(patch_img).unsqueeze(0))
-                        patch_tensor_cpu = torch.cat(tensors, dim=0)
-                        patch_targets_cpu = torch.full(
-                            (patch_tensor_cpu.size(0),),
-                            target_idx,
-                            device="cpu",
-                            dtype=torch.long,
-                        )
-                        sample_weights = compute_patch_weights(patch_samples)
+                            sample_weights = [1.0]
+                        else:
+                            tensors = []
+                            for patch_sample in patch_samples:
+                                patch_img = (
+                                    patch_sample.image
+                                    if patch_sample.image.mode == "RGB"
+                                    else patch_sample.image.convert("RGB")
+                                )
+                                tensors.append(self.inference_transform(patch_img).unsqueeze(0))
+                            patch_tensor_cpu = torch.cat(tensors, dim=0)
+                            patch_targets_cpu = torch.full(
+                                (patch_tensor_cpu.size(0),),
+                                target_idx,
+                                device="cpu",
+                                dtype=torch.long,
+                            )
+                            sample_weights = compute_patch_weights(patch_samples)
 
                     if patch_tensor_cpu is None or patch_targets_cpu is None or patch_tensor_cpu.size(0) == 0:
                         continue
@@ -517,41 +524,6 @@ class Trainer:
                     entry for entry in sample_entries if isinstance(entry.get("patches"), torch.Tensor) and entry["patches"].size(0) > 0
                 ]
                 sample_count = len(valid_entries)
-
-                if dist.is_available() and dist.is_initialized():
-                    min_tensor = torch.tensor(sample_count, device=self.accel.device, dtype=torch.long)
-                    max_tensor = torch.tensor(sample_count, device=self.accel.device, dtype=torch.long)
-                    dist.all_reduce(min_tensor, op=dist.ReduceOp.MIN)
-                    dist.all_reduce(max_tensor, op=dist.ReduceOp.MAX)
-                    global_min = int(min_tensor.item())
-                    global_max = int(max_tensor.item())
-                else:
-                    global_min = sample_count
-                    global_max = sample_count
-
-                if global_max == 0:
-                    if pbar is not None:
-                        pbar.update(1)
-                    steps_processed += 1
-                    continue
-
-                if global_min == 0:
-                    truncate_count = max(global_min, 0)
-                else:
-                    truncate_count = global_min
-
-                if truncate_count <= 0:
-                    if pbar is not None:
-                        pbar.update(1)
-                    steps_processed += 1
-                    continue
-
-                if sample_count > truncate_count:
-                    valid_entries = valid_entries[:truncate_count]
-                    sample_count = truncate_count
-
-                if global_max != global_min:
-                    sample_count = truncate_count
 
                 if sample_count == 0:
                     continue
