@@ -515,6 +515,15 @@ class Trainer:
         logits_collector = []
         targets_collector = []
         eps = 1e-8
+        total_steps = len(self.val_loader)
+        pbar = None
+        if self.accel.is_main_process:
+            pbar = tqdm(
+                total=total_steps,
+                desc="Validation",
+                leave=False,
+                dynamic_ncols=True,
+            )
         for batch in self.val_loader:
             if not batch:
                 continue
@@ -539,6 +548,15 @@ class Trainer:
                 logits_collector.append(self.accel.gather(logits_tensor.unsqueeze(0)))
                 target_tensor = torch.tensor([target_idx], device=self.accel.device, dtype=torch.long)
                 targets_collector.append(self.accel.gather(target_tensor))
+
+            if pbar is not None:
+                avg_loss = total_loss / max(1, total_count)
+                avg_acc = total_acc / max(1, total_count)
+                pbar.set_postfix(loss=f"{avg_loss:.4f}", acc=f"{avg_acc:.4f}")
+                pbar.update(1)
+
+        if pbar is not None:
+            pbar.close()
 
         metrics = {"loss": total_loss / max(1, total_count), "acc": total_acc / max(1, total_count)}
         if logits_collector:
