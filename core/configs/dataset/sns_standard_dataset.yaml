@@ -5,20 +5,12 @@ defaults:
 
 name: sns_standard_dataset
 loader:
-  batch_size: 512
+  batch_size: 256
   num_workers: 20
   prefetch_factor: 8
   drop_last: true
 train:
   transforms:
-    - type: Resize
-      size: 256
-    - type: CenterCrop
-      size: ${dataset.image_size}
     - type: RandomHorizontalFlip
 val:
   transforms:
-    - type: Resize
-      size: 256
-    - type: CenterCrop
-      size: ${dataset.image_size}

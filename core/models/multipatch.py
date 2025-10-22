@@ -230,6 +230,8 @@ def estimate_priority_regions(
     *,
     grid_size: Optional[int] = None,
     max_regions: int = 4,
+    base_cell_size: Optional[int] = None,
+    max_analysis_resolution: Optional[int] = 1024,
 ) -> List[Tuple[float, float, float, float]]:
     """이미지 복잡도 기반 우선순위 영역을 추정한다."""
 
@@ -242,8 +244,11 @@ def estimate_priority_regions(
         return []
 
     if grid_size is None:
-        grid_size = max(4, min(8, int(round(min(height, width) / 128.0))))
-    grid_size = max(2, grid_size)
+        if base_cell_size is None or base_cell_size <= 0:
+            raise ValueError("base_cell_size must be provided when grid_size is None.")
+        approx_grid = int(math.ceil(min(height, width) / float(base_cell_size)))
+        grid_size = max(1, approx_grid)
+    grid_size = max(1, grid_size)
     cell_h = max(1, height // grid_size)
     cell_w = max(1, width // grid_size)
 

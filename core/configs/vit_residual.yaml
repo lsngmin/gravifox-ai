@@ -28,13 +28,13 @@ scheduler:
   min_lr: 1.0e-6
 
 trainer:
-  epochs: 24
+  epochs: 25
   grad_accum_steps: 2
   mixed_precision: fp16
   label_smoothing: 0.05
   log_interval: 50
   criterion: ce
-  patch_chunk_size:
+  patch_chunk_size: 10
   partial_steps: -1
   early_stopping:
     enabled: true
@@ -51,31 +51,31 @@ dataset:
   data_root: /home/smin/datasets/genimage
   source: imagenet_ai_0508_adm
   loader:
-    batch_size: 24
-    num_workers: 8
+    batch_size: 60
+    num_workers: 12
     pin_memory: true
     persistent_workers: true
     drop_last: true
-    prefetch_factor: 3
+    prefetch_factor: 6
     precompute_patches: true
 
 augment:
   sns:
     jpeg_q: [35, 90]
     webp_q: [35, 90]
-    resize_long: [512, 2048]
+    resize_long: [0, 0]
     noise_sigma: [0.0, 4.0]
     gamma: [0.8, 1.2]
     repeats: [1, 3]
     watermark_alpha: [0.1, 0.3]
 
 inference:
-  multiscale: [224, 336, 512]
-  cell_sizes: [256, 384, 640]
+  multiscale: [336]
+  cell_sizes: [336]
   n_patches: 0
   patch_overlap: 0.25
   patch_jitter: 0.1
-  max_patches: 24
+  max_patches: 10
   aggregate: mean
   uncertain_band: [0.45, 0.55]
 

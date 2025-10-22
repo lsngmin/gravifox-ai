@@ -1,2 +1,0 @@
-timestamp,model,dataset,optimizer,val_acc,val_loss
-20250101_000000,sample_model,standard,adamw,0.9100,0.2500

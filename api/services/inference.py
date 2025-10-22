@@ -609,7 +609,14 @@ class VitInferenceService:
     ) -> Optional[List[Tuple[float, float, float, float]]]:
         """간단한 복잡도 히트맵 기반 우선순위 영역을 추정한다."""
 
-        regions = estimate_priority_regions(image, max_regions=4)
+        base_cell_size: Optional[int] = None
+        if pipeline.inference_cell_sizes:
+            base_cell_size = int(pipeline.inference_cell_sizes[0])
+        regions = estimate_priority_regions(
+            image,
+            max_regions=4,
+            base_cell_size=base_cell_size,
+        )
         if regions:
             width, height = image.size
             self._logger.debug(

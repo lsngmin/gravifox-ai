@@ -69,7 +69,20 @@ class MultipatchDataset(torch.utils.data.Dataset):
             else:
                 raise TypeError("augment callable must return PIL.Image or Tensor")
 
-        priority_regions = estimate_priority_regions(image)
+        base_cell_size: Optional[int] = None
+        cell_cfg = self.patch_params.get("cell_sizes")
+        if isinstance(cell_cfg, (list, tuple)):
+            for value in cell_cfg:
+                if value:
+                    base_cell_size = int(value)
+                    break
+        elif cell_cfg:
+            base_cell_size = int(cell_cfg)
+
+        priority_regions = estimate_priority_regions(
+            image,
+            base_cell_size=base_cell_size,
+        )
         patch_samples = generate_patches(
             image,
             sizes=self.patch_params["sizes"],
@@ -84,7 +97,14 @@ class MultipatchDataset(torch.utils.data.Dataset):
         if not patch_samples:
             tensor = self.patch_transform(image if image.mode == "RGB" else image.convert("RGB"))
             return tensor.unsqueeze(0), [
-                {"scale_index": 0, "priority": True, "complexity": 0.0, "weight": 1.0}
+                {
+                    "scale_index": 0,
+                    "priority": True,
+                    "complexity": 0.0,
+                    "weight": 1.0,
+                    "center_x": 0.5,
+                    "center_y": 0.5,
+                }
             ], target
 
         patch_tensors: List[torch.Tensor] = []
@@ -102,6 +122,8 @@ class MultipatchDataset(torch.utils.data.Dataset):
                     "priority": bool(sample.priority),
                     "complexity": float(sample.complexity),
                     "weight": float(weights[idx] if idx < len(weights) else 1.0),
+                    "center_x": float((sample.bbox[0] + sample.bbox[2]) * 0.5),
+                    "center_y": float((sample.bbox[1] + sample.bbox[3]) * 0.5),
                 }
             )
 
@@ -291,6 +313,7 @@ def build_dataloaders(
     return_raw_val_images: bool = False,
     return_raw_train_images: bool = False,
     multipatch_cfg: Optional[Dict[str, Any]] = None,
+    precompute_val_patches: bool = False,
 ) -> Tuple[DataLoader, Optional[DataLoader], list[str], transforms.Compose, Optional[callable]]:
     """DatasetConfig를 받아 학습/검증 DataLoader를 생성한다."""
 
@@ -319,7 +342,9 @@ def build_dataloaders(
     if dataset_cfg.augment and isinstance(dataset_cfg.augment, dict):
         sns_config = dataset_cfg.augment.get("sns")
     sns_aug = build_sns_augment(sns_config)
-    precompute_patches = bool(dataset_cfg.loader.precompute_patches)
+    loader_cfg = dataset_cfg.loader
+    precompute_patches = bool(getattr(loader_cfg, "precompute_patches", False))
+    val_precompute_patches = precompute_val_patches or bool(getattr(loader_cfg, "val_precompute_patches", False))
     if precompute_patches:
         train_tf = None
         train_pil_augment = _build_train_pil_augment(dataset_cfg, sns_aug)
@@ -330,13 +355,17 @@ def build_dataloaders(
     val_tf = val_service_tf
 
     if return_raw_val_images:
-        val_tf = None
         val_loader_kwargs["collate_fn"] = _identity_collate
         val_loader_params["collate_fn"] = _identity_collate
     if return_raw_train_images:
         train_tf = None
         train_loader_kwargs["collate_fn"] = _identity_collate
         train_loader_params["collate_fn"] = _identity_collate
+    if val_precompute_patches:
+        val_loader_kwargs["collate_fn"] = _identity_collate
+        val_loader_params["collate_fn"] = _identity_collate
+
+    val_loader_transform = val_tf if not (return_raw_val_images or val_precompute_patches) else None
 
     sources = _resolve_sources(dataset_cfg)
     train_datasets = []
@@ -398,7 +427,9 @@ def build_dataloaders(
     else:
         train_dataset = ConcatDataset(train_datasets)
 
-    if precompute_patches:
+    need_multipatch = precompute_patches or val_precompute_patches
+    patch_params: Optional[Dict[str, Any]] = None
+    if need_multipatch:
         mp_cfg = multipatch_cfg or {}
         sizes = mp_cfg.get("multiscale") or mp_cfg.get("scales") or [dataset_cfg.image_size]
         sizes = tuple(int(x) for x in sizes)
@@ -421,6 +452,7 @@ def build_dataloaders(
         }
         if patch_params["max_patches"] <= 0:
             patch_params["max_patches"] = None
+    if precompute_patches and patch_params is not None:
         train_dataset = MultipatchDataset(
             train_dataset,
             augment=train_pil_augment,
@@ -489,7 +521,7 @@ def build_dataloaders(
                 source,
                 "val",
                 data_root=dataset_cfg.data_root,
-                transform=val_tf,
+                transform=val_loader_transform,
                 limit=dataset_cfg.val.limit if dataset_cfg.val else None,
             )
             if dataset is None:
@@ -497,11 +529,23 @@ def build_dataloaders(
             val_datasets.append(dataset)
         if not val_datasets and not sources:
             val_root = dataset_cfg.val.resolve_root()
-            dataset = datasets.ImageFolder(str(val_root), transform=val_tf, loader=_safe_loader)
+            dataset = datasets.ImageFolder(str(val_root), transform=val_loader_transform, loader=_safe_loader)
             _enforce_class_order(dataset)
             dataset = _apply_limit(dataset, dataset_cfg.val.limit)
             val_datasets = [dataset]
         if val_datasets:
+            if val_precompute_patches and patch_params is not None:
+                wrapped: List[torch.utils.data.Dataset] = []
+                for dataset in val_datasets:
+                    wrapped.append(
+                        MultipatchDataset(
+                            dataset,
+                            augment=None,
+                            patch_transform=val_service_tf,
+                            patch_params=patch_params,
+                        )
+                    )
+                val_datasets = wrapped
             if len(val_datasets) == 1:
                 val_dataset = val_datasets[0]
             else:

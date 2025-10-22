@@ -4,11 +4,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Optional, Sequence, Tuple, List, Any
 
+import datetime
+import json
 import math
 import os
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 from torch.utils.data import DataLoader
 from PIL import Image
 from torchvision import transforms as vision_transforms
@@ -25,6 +29,27 @@ from core.models.multipatch import (
 from .experiment_manager import ExperimentManager, MonitorConfig
 from .metrics import classification_metrics, top1_accuracy
 from .optim import create_optimizer
+
+
+_STEP_DEBUG_ENV = os.environ.get("TVB_TRAIN_STEP_DEBUG", "").strip().lower() in {"1", "true", "yes"}
+_STEP_DEBUG_ENABLED = _STEP_DEBUG_ENV
+
+
+def _log_rank(message: str) -> None:
+    """분산 환경에서 rank별 디버그 로그를 출력한다."""
+
+    if not _STEP_DEBUG_ENABLED:
+        return
+
+    if dist.is_available() and dist.is_initialized():
+        try:
+            rank = dist.get_rank()
+        except Exception:
+            rank = -1
+    else:
+        rank = 0
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+    print(f"[{timestamp}] rank={rank} | {message}", flush=True)
 
 @dataclass
 class TrainCfg:
@@ -53,6 +78,8 @@ class TrainCfg:
     full_epochs: Optional[int] = None
     partial_steps: Optional[int] = None
     full_steps: Optional[int] = None
+    service_val_pipeline: bool = True
+    val_steps_limit: Optional[int] = None
     seed: Optional[int] = None
     # Early stopping
     early_stop: bool = False
@@ -62,6 +89,7 @@ class TrainCfg:
     # Checkpoint selection
     ckpt_monitor: str = "val_loss"
     ckpt_mode: str = "min"
+    step_debug_logging: bool = False
 
 
 class Trainer:
@@ -107,18 +135,39 @@ class Trainer:
         self.inference_transform = inference_transform
         self.train_augment = train_augment
         self._to_pil = vision_transforms.ToPILImage()
+        self.system_logger = get_logger(__name__)
+        self.train_logger = get_train_logger()
+        ddp_kwargs = DistributedDataParallelKwargs(
+            broadcast_buffers=False,
+            find_unused_parameters=True,
+            gradient_as_bucket_view=True,
+            static_graph=False,
+        )
+
+        self.accel = accelerator or Accelerator(
+            mixed_precision=cfg.mixed_precision or "no",
+            gradient_accumulation_steps=cfg.grad_accum_steps,
+            kwargs_handlers=[ddp_kwargs],
+        )
+        try:
+            setattr(self.accel, "even_batches", False)
+        except Exception:
+            pass
+
+        global _STEP_DEBUG_ENABLED
+
         self._init_inference_settings()
+        _STEP_DEBUG_ENABLED = bool(cfg.step_debug_logging) or _STEP_DEBUG_ENV
         self.patch_chunk_size = max(1, int(cfg.patch_chunk_size or 8))
 
         monitor = MonitorConfig(key=cfg.ckpt_monitor, mode=cfg.ckpt_mode)
         self.experiment = experiment or ExperimentManager(Path(out_dir), monitor=monitor)
         self.out_dir = Path(self.experiment.root)
 
-        self.system_logger = get_logger(__name__)
-        self.train_logger = get_train_logger()
+        if not self.cfg.service_val_pipeline and self.accel.is_main_process:
+            self.system_logger.info("검증 시 서비스 추론 파이프라인을 비활성화합니다.")
 
-        main_process = str(os.environ.get("LOCAL_RANK", "0")) == "0"
-        if main_process:
+        if self.accel.is_main_process:
             self.system_logger.info(
                 "DataLoader 설정(train/before prepare) - %s",
                 self._loader_summary(train_loader),
@@ -128,14 +177,6 @@ class Trainer:
                 self._loader_summary(val_loader),
             )
 
-        self.accel = accelerator or Accelerator(
-            mixed_precision=cfg.mixed_precision or "no",
-            gradient_accumulation_steps=cfg.grad_accum_steps,
-        )
-        try:
-            setattr(self.accel, "even_batches", False)
-        except Exception:
-            pass
         try:
             gpu_cnt = torch.cuda.device_count()
         except Exception:
@@ -164,13 +205,65 @@ class Trainer:
         self.scheduler = self._build_scheduler()
 
         if self.scheduler is not None:
-            (self.model, self.optimizer, self.train_loader, self.val_loader, self.scheduler) = self.accel.prepare(
-                self.model, self.optimizer, self.train_loader, self.val_loader, self.scheduler
-            )
+            prepare_args = (self.model, self.optimizer, self.train_loader, self.val_loader, self.scheduler)
+            (self.model, self.optimizer, self.train_loader, self.val_loader, self.scheduler) = self.accel.prepare(*prepare_args)
         else:
-            (self.model, self.optimizer, self.train_loader, self.val_loader) = self.accel.prepare(
-                self.model, self.optimizer, self.train_loader, self.val_loader
-            )
+            prepare_args = (self.model, self.optimizer, self.train_loader, self.val_loader)
+            (self.model, self.optimizer, self.train_loader, self.val_loader) = self.accel.prepare(*prepare_args)
+
+        wrapper_chain: List[str] = []
+        cursor = self.model
+        visited: set[int] = set()
+        while id(cursor) not in visited:
+            visited.add(id(cursor))
+            wrapper_chain.append(type(cursor).__name__)
+            next_cursor = getattr(cursor, "module", None)
+            if next_cursor is None or next_cursor is cursor:
+                break
+            cursor = next_cursor
+
+        broadcast_value: Optional[object] = None
+        find_unused_value: Optional[object] = None
+        cursor = self.model
+        while cursor is not None:
+            if broadcast_value is None and hasattr(cursor, "broadcast_buffers"):
+                broadcast_value = getattr(cursor, "broadcast_buffers")
+                setattr(cursor, "broadcast_buffers", False)
+            if find_unused_value is None and hasattr(cursor, "find_unused_parameters"):
+                find_unused_value = getattr(cursor, "find_unused_parameters")
+                setattr(cursor, "find_unused_parameters", True)
+            next_cursor = getattr(cursor, "module", None)
+            if next_cursor is None or next_cursor is cursor:
+                break
+            cursor = next_cursor
+
+        self.system_logger.info("DDP wrapper chain: %s", " -> ".join(wrapper_chain))
+        self.system_logger.info(
+            "DDP 설정 - broadcast_buffers(before)=%s, find_unused_parameters(before)=%s",
+            str(broadcast_value),
+            str(find_unused_value),
+        )
+
+        final_bcast: Optional[object] = None
+        final_find: Optional[object] = None
+        cursor = self.model
+        visited.clear()
+        while id(cursor) not in visited:
+            visited.add(id(cursor))
+            if hasattr(cursor, "broadcast_buffers"):
+                final_bcast = getattr(cursor, "broadcast_buffers")
+            if hasattr(cursor, "find_unused_parameters"):
+                final_find = getattr(cursor, "find_unused_parameters")
+            next_cursor = getattr(cursor, "module", None)
+            if next_cursor is None or next_cursor is cursor:
+                break
+            cursor = next_cursor
+
+        self.system_logger.info(
+            "DDP 설정 적용 후 - broadcast_buffers=%s, find_unused_parameters=%s",
+            str(final_bcast),
+            str(final_find),
+        )
 
         if self.accel.is_main_process:
             self.system_logger.info(
@@ -248,7 +341,13 @@ class Trainer:
         self.inference_max_patches = mp_value
 
     def _evaluate_validation_image(self, image: Image.Image) -> Tuple[torch.Tensor, torch.Tensor]:
-        priority_regions = estimate_priority_regions(image)
+        base_cell_size: Optional[int] = None
+        if self.inference_cell_sizes:
+            base_cell_size = int(self.inference_cell_sizes[0])
+        priority_regions = estimate_priority_regions(
+            image,
+            base_cell_size=base_cell_size,
+        )
         patch_samples = generate_patches(
             image,
             sizes=self.inference_scales,
@@ -294,6 +393,26 @@ class Trainer:
         probs_tensor = torch.clamp(probs_tensor, min=1e-8)
         logits_tensor = torch.log(probs_tensor)
         return probs_tensor, logits_tensor
+
+    def _forward_patch_tensor(self, patches: torch.Tensor) -> torch.Tensor:
+        """멀티패치 텐서를 chunk 단위로 모델에 통과시킨다."""
+
+        chunk_size = max(1, int(self.patch_chunk_size))
+        patches = patches.to(self.accel.device, non_blocking=True)
+        if patches.size(0) <= chunk_size:
+            with self.accel.autocast():
+                return self.model(patches)
+
+        logits_list: List[torch.Tensor] = []
+        for chunk in patches.split(chunk_size):
+            if chunk.numel() == 0:
+                continue
+            with self.accel.autocast():
+                logits_list.append(self.model(chunk))
+        if not logits_list:
+            with self.accel.autocast():
+                return self.model(patches)
+        return torch.cat(logits_list, dim=0)
 
     # ------------------------------------------------------------------
     # Builders
@@ -359,17 +478,51 @@ class Trainer:
         total_count = 0
         steps_processed = 0
 
-        total_steps = steps_limit if steps_limit > 0 else len(self.train_loader)
+        coverage_sum_y = 0.0
+        coverage_sum_y_sq = 0.0
+        coverage_count = 0
+        complexity_sum = 0.0
+        complexity_max = 0.0
+        quadrant_counts = {"top": 0, "bottom": 0, "left": 0, "right": 0}
+
+        def _update_patch_stats(meta: Any) -> None:
+            nonlocal coverage_sum_y, coverage_sum_y_sq, coverage_count, complexity_sum, complexity_max, quadrant_counts
+            if not isinstance(meta, dict):
+                return
+            cx = float(meta.get("center_x", 0.5))
+            cy = float(meta.get("center_y", 0.5))
+            complexity = float(meta.get("complexity", 0.0))
+            coverage_sum_y += cy
+            coverage_sum_y_sq += cy * cy
+            coverage_count += 1
+            complexity_sum += complexity
+            if complexity > complexity_max:
+                complexity_max = complexity
+            if cy < 0.5:
+                quadrant_counts["top"] += 1
+            else:
+                quadrant_counts["bottom"] += 1
+            if cx < 0.5:
+                quadrant_counts["left"] += 1
+            else:
+                quadrant_counts["right"] += 1
+
+        actual_train_steps = len(self.train_loader)
+        if steps_limit > 0:
+            total_steps = min(steps_limit, actual_train_steps)
+        else:
+            total_steps = actual_train_steps
         pbar = None
         if self.accel.is_main_process:
             pbar = tqdm(
                 total=total_steps,
                 desc=f"Epoch {epoch}",
-                leave=False,
+                leave=True,
                 dynamic_ncols=True,
             )
 
         for step, batch in enumerate(self.train_loader, start=1):
+            _log_rank(f"epoch={epoch} step={step} start")
             if not batch:
                 continue
 
@@ -398,14 +551,32 @@ class Trainer:
 
                     primary = sample
                     target_idx = 0
+                    sample_metadata: Optional[Sequence[Any]] = None
                     if isinstance(sample, (tuple, list)) and len(sample) > 0:
                         primary = sample[0]
                         if len(sample) > 1:
-                            target_idx = _normalize_target(sample[1])
+                            candidate_meta = sample[1]
+                            if isinstance(candidate_meta, (list, tuple)):
+                                sample_metadata = candidate_meta
+                            try:
+                                target_idx = _normalize_target(sample[-1])
+                            except (TypeError, ValueError):
+                                continue
 
+                    tensor = None
                     if isinstance(primary, torch.Tensor):
                         if primary.dim() == 4:
-                            tensor = primary[0]
+                            for patch_idx, patch in enumerate(primary):
+                                if not isinstance(patch, torch.Tensor) or patch.dim() != 3:
+                                    continue
+                                tensors_for_batch.append(patch.unsqueeze(0))
+                                targets_list.append(target_idx)
+                                if (
+                                    sample_metadata is not None
+                                    and 0 <= patch_idx < len(sample_metadata)
+                                ):
+                                    _update_patch_stats(sample_metadata[patch_idx])
+                            continue
                         elif primary.dim() == 3:
                             tensor = primary
                         else:
@@ -435,22 +606,32 @@ class Trainer:
 
                     tensors_for_batch.append(tensor.unsqueeze(0))
                     targets_list.append(target_idx)
+                    if sample_metadata is not None and len(sample_metadata) > 0:
+                        _update_patch_stats(sample_metadata[0])
 
                 if not tensors_for_batch:
                     continue
 
-                batch_tensor = torch.cat(tensors_for_batch, dim=0).to(
-                    self.accel.device, non_blocking=True
-                )
+                batch_tensor = torch.cat(tensors_for_batch, dim=0)
+                _log_rank(f"epoch={epoch} step={step} after_batch_tensor")
                 targets_tensor = torch.tensor(
                     targets_list, device=self.accel.device, dtype=torch.long
                 )
 
+                _log_rank(f"epoch={epoch} step={step} before_forward")
+                logits = self._forward_patch_tensor(batch_tensor)
+                _log_rank(f"epoch={epoch} step={step} after_forward")
                 with self.accel.autocast():
-                    logits = self.model(batch_tensor)
                     loss = self.criterion(logits, targets_tensor)
+                _log_rank(f"epoch={epoch} step={step} after_loss")
 
                 self.accel.backward(loss)
+                _log_rank(f"epoch={epoch} step={step} after_backward")
+                try:
+                    self.accel.wait_for_everyone()
+                except Exception:
+                    _log_rank(f"epoch={epoch} step={step} barrier_failed")
+                    raise
 
                 loss_value = float(loss.detach().item())
                 current_samples = targets_tensor.size(0)
@@ -481,24 +662,30 @@ class Trainer:
 
             steps_processed += 1
 
-            if (
-                (step % max(1, self.cfg.log_interval)) == 0
-                and self.accel.is_main_process
-                and total_count > 0
-            ):
-                avg_loss = total_loss / max(1, total_count)
-                avg_acc = total_acc / max(1, total_count)
-                self.train_logger.info(
-                    "에폭 %d 스텝 %d/%d - loss=%.4f acc=%.4f",
-                    epoch,
-                    step,
-                    steps_limit,
-                    avg_loss,
-                    avg_acc,
-                )
-
             if steps_limit > 0 and steps_processed >= steps_limit:
                 break
+
+        if self.accel.is_main_process and coverage_count > 0:
+            mean_y = coverage_sum_y / coverage_count
+            variance_y = max(0.0, (coverage_sum_y_sq / coverage_count) - (mean_y * mean_y))
+            std_y = math.sqrt(variance_y)
+            complexity_mean = complexity_sum / coverage_count if coverage_count > 0 else 0.0
+            payload = {
+                "event": "patch_coverage",
+                "epoch": int(epoch),
+                "patch_count": int(coverage_count),
+                "patch_center_y_mean": float(mean_y),
+                "patch_center_y_std": float(std_y),
+                "quadrant_counts": {
+                    "top": int(quadrant_counts["top"]),
+                    "bottom": int(quadrant_counts["bottom"]),
+                    "left": int(quadrant_counts["left"]),
+                    "right": int(quadrant_counts["right"]),
+                },
+                "complexity_mean": float(complexity_mean),
+                "complexity_max": float(complexity_max),
+            }
+            self.train_logger.info(json.dumps(payload, ensure_ascii=False))
 
         if pbar is not None:
             pbar.close()
@@ -515,15 +702,35 @@ class Trainer:
         logits_collector = []
         targets_collector = []
         eps = 1e-8
-        total_steps = len(self.val_loader)
+        steps_limit = 0
+        if self.cfg.val_steps_limit is not None:
+            try:
+                steps_limit = max(0, int(self.cfg.val_steps_limit))
+            except (TypeError, ValueError):
+                steps_limit = 0
+        try:
+            total_batches = len(self.val_loader)
+        except TypeError:
+            total_batches = 0
+        if steps_limit > 0:
+            total_steps = min(steps_limit, total_batches)
+        else:
+            total_steps = total_batches
+        if steps_limit > 0 and self.system_logger is not None and self.accel.is_main_process:
+            self.system_logger.info(
+                "검증 배치를 최대 %d회로 제한합니다 (전체=%d)",
+                total_steps,
+                total_batches,
+            )
         pbar = None
         if self.accel.is_main_process:
             pbar = tqdm(
                 total=total_steps,
                 desc="Validation",
-                leave=False,
+                leave=True,
                 dynamic_ncols=True,
             )
+        steps_processed = 0
         for batch in self.val_loader:
             if not batch:
                 continue
@@ -563,6 +770,96 @@ class Trainer:
                 if gathered_logits.numel() > 0:
                     logits_collector.append(gathered_logits.cpu())
                     targets_collector.append(gathered_targets.cpu())
+            elif (
+                isinstance(batch, list)
+                and batch
+                and isinstance(batch[0], (list, tuple))
+                and len(batch[0]) >= 1
+                and isinstance(batch[0][0], torch.Tensor)
+                and batch[0][0].dim() == 4
+            ):
+                image_logits: List[torch.Tensor] = []
+                image_targets: List[int] = []
+                for item in batch:
+                    if not item:
+                        continue
+                    patches_tensor = item[0]
+                    metadata = None
+                    target_value = 0
+                    if len(item) >= 3:
+                        metadata = item[1]
+                        target_value = item[2]
+                    elif len(item) == 2:
+                        target_value = item[1]
+                    else:
+                        target_value = 0
+
+                    if not isinstance(patches_tensor, torch.Tensor) or patches_tensor.dim() != 4:
+                        continue
+                    if isinstance(target_value, (list, tuple)) and target_value:
+                        target_value = target_value[0]
+                    if isinstance(target_value, torch.Tensor):
+                        if target_value.ndim == 0:
+                            target_idx = int(target_value.item())
+                        else:
+                            target_idx = int(target_value.view(-1)[0].item())
+                    else:
+                        target_idx = int(target_value)
+
+                    logits_patches = self._forward_patch_tensor(patches_tensor)
+                    probs_patches = torch.softmax(logits_patches, dim=1)
+                    probs_cpu = probs_patches.detach().cpu()
+                    patch_scores = [
+                        {"real": float(prob[0]), "ai": float(prob[1])} for prob in probs_cpu
+                    ]
+
+                    weights: Optional[List[float]] = None
+                    if isinstance(metadata, (list, tuple)) and len(metadata) == len(patch_scores):
+                        weights_candidate: List[float] = []
+                        valid_weights = True
+                        for meta in metadata:
+                            if isinstance(meta, dict):
+                                weights_candidate.append(float(meta.get("weight", 1.0)))
+                            else:
+                                valid_weights = False
+                                break
+                        if valid_weights:
+                            weights = weights_candidate
+
+                    aggregated = aggregate_scores(
+                        patch_scores,
+                        method=self.inference_aggregate,
+                        weights=weights if weights else None,
+                    )
+                    probs_tensor = torch.tensor(
+                        [aggregated["real"], aggregated["ai"]],
+                        device=self.accel.device,
+                        dtype=torch.float32,
+                    )
+                    probs_tensor = torch.clamp(probs_tensor, min=eps)
+                    logits_tensor = torch.log(probs_tensor)
+
+                    prob_value = max(float(probs_tensor[target_idx].item()), eps)
+                    loss_value = -math.log(prob_value)
+                    total_loss += loss_value
+                    pred_idx = int(torch.argmax(probs_tensor).item())
+                    if pred_idx == target_idx:
+                        total_acc += 1.0
+                    total_count += 1.0
+
+                    image_logits.append(logits_tensor.unsqueeze(0))
+                    image_targets.append(target_idx)
+
+                if image_logits:
+                    logits_batch = torch.cat(image_logits, dim=0)
+                    targets_batch = torch.tensor(
+                        image_targets, device=self.accel.device, dtype=torch.long
+                    )
+                    gathered_logits = self.accel.gather_for_metrics(logits_batch)
+                    gathered_targets = self.accel.gather_for_metrics(targets_batch)
+                    if gathered_logits.numel() > 0:
+                        logits_collector.append(gathered_logits.cpu())
+                        targets_collector.append(gathered_targets.cpu())
             else:
                 batch_logits_gpu: List[torch.Tensor] = []
                 batch_targets_gpu: List[int] = []
@@ -618,6 +915,9 @@ class Trainer:
                 avg_acc = total_acc / max(1, total_count)
                 pbar.set_postfix(loss=f"{avg_loss:.4f}", acc=f"{avg_acc:.4f}")
                 pbar.update(1)
+            steps_processed += 1
+            if steps_limit > 0 and steps_processed >= steps_limit:
+                break
 
         if pbar is not None:
             pbar.close()
@@ -701,10 +1001,6 @@ class Trainer:
             else:
                 steps_limit = max(1, min(int(steps_target), max_steps_available))
 
-            self.system_logger.info(
-                "에폭 %d/%d (%s) - steps_limit=%d", epoch, total_epochs, phase, steps_limit
-            )
-
             train_metrics = self._train_one_epoch(epoch, steps_limit)
             val_metrics = self._validate()
             last_val_metrics = val_metrics
@@ -773,5 +1069,15 @@ class Trainer:
                     self.cfg.early_mode,
                 )
                 break
+
+        try:
+            self.accel.wait_for_everyone()
+        except Exception:
+            pass
+        try:
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                torch.distributed.destroy_process_group()
+        except Exception:
+            pass
 
         return last_val_metrics

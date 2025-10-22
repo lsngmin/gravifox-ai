@@ -10,6 +10,7 @@ import hydra
 import torch
 import torch.distributed as dist
 from accelerate import Accelerator
+from accelerate.utils import DistributedType
 from omegaconf import DictConfig, OmegaConf
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +39,14 @@ def _build_train_cfg(cfg: DictConfig) -> TrainCfg:
     trainer_cfg = cfg.trainer
     early_cfg = trainer_cfg.get("early_stopping", {})
     monitor_cfg = trainer_cfg.get("monitor", {})
+    step_debug_flag = trainer_cfg.get("step_debug_logging", False)
+    raw_val_steps = trainer_cfg.get("val_steps_limit")
+    val_steps_limit: Optional[int]
+    try:
+        parsed_val_steps = int(raw_val_steps)
+        val_steps_limit = parsed_val_steps if parsed_val_steps > 0 else None
+    except (TypeError, ValueError):
+        val_steps_limit = None
 
     return TrainCfg(
         epochs=trainer_cfg.get("epochs", 10),
@@ -62,6 +71,9 @@ def _build_train_cfg(cfg: DictConfig) -> TrainCfg:
         full_epochs=trainer_cfg.get("full_epochs"),
         partial_steps=trainer_cfg.get("partial_steps"),
         full_steps=trainer_cfg.get("full_steps"),
+        service_val_pipeline=bool(trainer_cfg.get("service_val_pipeline", True)),
+        val_steps_limit=val_steps_limit,
+        step_debug_logging=bool(step_debug_flag),
         seed=getattr(cfg.run, "seed", None),
         early_stop=early_cfg.get("enabled", False),
         early_patience=early_cfg.get("patience", 8),
@@ -78,8 +90,14 @@ def _sync_processes(accelerator: Accelerator) -> None:
     if accelerator.num_processes <= 1:
         return
 
+    def _dist_ready() -> bool:
+        try:
+            return dist.is_available() and dist.is_initialized()
+        except Exception:
+            return False
+
     try:
-        if dist.is_available() and dist.is_initialized():
+        if _dist_ready():
             current_device = None
             device_obj = getattr(accelerator, "device", None)
             if isinstance(device_obj, torch.device) and device_obj.type == "cuda":
@@ -94,14 +112,24 @@ def _sync_processes(accelerator: Accelerator) -> None:
                     pass
             dist.barrier()
             return
-    except Exception:
-        pass
+    except Exception as exc:  # pragma: no cover - 로그 정도만 남김
+        logger.debug("torch.distributed.barrier 호출 실패: %s", exc)
 
-    accelerator.wait_for_everyone()
+    state = getattr(accelerator, "state", None)
+    distributed_type = getattr(state, "distributed_type", None)
+    if distributed_type in (None, DistributedType.NO) or not _dist_ready():
+        return
+
+    try:
+        accelerator.wait_for_everyone()
+    except Exception as exc:  # pragma: no cover - 호출 실패 시 무시
+        logger.debug("accelerator.wait_for_everyone 호출 실패: %s", exc)
 
 
 def run_training(cfg: DictConfig) -> Path:
     """Hydra DictConfig를 받아 단일 학습을 수행한다."""
+
+    train_cfg = _build_train_cfg(cfg)
 
     preassigned_device = False
     if torch.cuda.is_available():
@@ -194,9 +222,10 @@ def run_training(cfg: DictConfig) -> Path:
         world_size=world_size,
         rank=rank,
         seed=cfg.run.seed,
-        return_raw_val_images=True,
+        return_raw_val_images=train_cfg.service_val_pipeline,
         return_raw_train_images=True,
         multipatch_cfg=_to_dict(getattr(cfg, "inference", {})) or {},
+        precompute_val_patches=train_cfg.service_val_pipeline,
     )
     if accelerator.is_main_process:
         logger.info("데이터셋 클래스: %s", class_names)
@@ -204,7 +233,6 @@ def run_training(cfg: DictConfig) -> Path:
     params_dict = _to_dict(cfg.model.get("params", {})) or {}
     model = get_model(cfg.model.name, **params_dict)
 
-    train_cfg = _build_train_cfg(cfg)
     monitor = MonitorConfig(key=train_cfg.ckpt_monitor, mode=train_cfg.ckpt_mode)
     manager = ExperimentManager(
         experiment_dir,

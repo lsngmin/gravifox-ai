@@ -42,6 +42,9 @@ def _random_long_short(size: Tuple[int, int], cfg: AugConfig) -> Tuple[int, int]
     """긴 변과 비율 범위를 토대로 새로운 크기를 샘플링한다."""
 
     long_min, long_max = cfg.resize_long
+    if long_min <= 0 or long_max <= 0:
+        # resize를 비활성화한 경우 원본 크기를 유지한다.
+        return size
     aspect_min, aspect_max = cfg.aspect_ratio
     long_side = random.randint(long_min, long_max)
     aspect = random.uniform(aspect_min, aspect_max)

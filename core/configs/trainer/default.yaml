@@ -3,6 +3,8 @@ partial_epochs: 35
 full_epochs: 5
 partial_steps: 10000
 full_steps: -1
+service_val_pipeline: true
+val_steps_limit: null
 mixed_precision: fp16
 grad_accum_steps: 1
 log_interval: 50
@@ -10,6 +12,7 @@ criterion: ce
 label_smoothing: 0.0
 max_grad_norm: 1.0
 patch_chunk_size: 8
+step_debug_logging: false
 
 monitor:
   key: val_loss

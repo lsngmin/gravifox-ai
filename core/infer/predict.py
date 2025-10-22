@@ -78,8 +78,19 @@ def run_inference(
         if min_cell_values is None:
             min_cell_values = tuple(scales)
         computed_priority_regions = priority_regions
+        base_cell_size: Optional[int] = None
+        if isinstance(min_cell_values, (list, tuple)):
+            for value in min_cell_values:
+                if value:
+                    base_cell_size = int(value)
+                    break
+        elif min_cell_values:
+            base_cell_size = int(min_cell_values)
         if computed_priority_regions is None:
-            computed_priority_regions = estimate_priority_regions(pil_image)
+            computed_priority_regions = estimate_priority_regions(
+                pil_image,
+                base_cell_size=base_cell_size,
+            )
         patches = generate_patches(
             pil_image,
             sizes=scales,
