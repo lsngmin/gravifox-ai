@@ -4,10 +4,10 @@
     {
       "key": "vit_residual_fusion",
       "name": "Altair-0.1-fusion",
-      "version": "2025-03",
+      "version": "2025-10",
       "description": "ViT-B/16 with residual branch and multipatch inference for SNS robustness.",
       "type": "torch_image",
-      "path": "vit_residual_fusion.pt",
+      "path": "/home/smin/tvb/tvb-ai/api/models/v1.pt",
       "threshold": 0.55,
       "input": "image",
       "labels": [
