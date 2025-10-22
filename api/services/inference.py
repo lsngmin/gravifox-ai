@@ -527,12 +527,6 @@ class VitInferenceService:
         if run_dir is None:
             run_dir = self._resolve_default_run_dir()
 
-        if meta_path is None:
-            meta_path = run_dir / "meta.yaml"
-
-        if not meta_path.is_file():
-            raise FileNotFoundError(f"meta.yaml을 찾을 수 없습니다: {meta_path}")
-
         checkpoint_name_override = (
             extras.get("checkpoint_name") or extras.get("checkpointName")
         )
@@ -548,6 +542,38 @@ class VitInferenceService:
             raise FileNotFoundError(
                 f"체크포인트를 찾을 수 없습니다: {checkpoint_path}"
             )
+
+        if meta_path is None:
+            meta_path = run_dir / "meta.yaml"
+
+        if not meta_path.is_file():
+            fallback_candidates: List[Path] = []
+            if checkpoint_path is not None:
+                stem = checkpoint_path.stem
+                fallback_candidates.extend(
+                    [
+                        checkpoint_path.with_suffix(".yaml"),
+                        checkpoint_path.with_suffix(".yml"),
+                        checkpoint_path.with_name(f"{stem}.meta.yaml"),
+                        checkpoint_path.with_name(f"{stem}.meta.yml"),
+                    ]
+                )
+            fallback_candidates.append(run_dir / "meta.yaml")
+            seen: set[Path] = set()
+            resolved_meta: Optional[Path] = None
+            for candidate in fallback_candidates:
+                if candidate is None:
+                    continue
+                path = candidate.resolve()
+                if path in seen:
+                    continue
+                seen.add(path)
+                if path.is_file():
+                    resolved_meta = path
+                    break
+            if resolved_meta is None:
+                raise FileNotFoundError(f"meta.yaml을 찾을 수 없습니다: {meta_path}")
+            meta_path = resolved_meta
 
         return run_dir, meta_path, checkpoint_path
 
