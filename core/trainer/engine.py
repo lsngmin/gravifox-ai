@@ -8,6 +8,7 @@ import datetime
 import json
 import math
 import os
+import logging
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -50,6 +51,42 @@ def _log_rank(message: str) -> None:
         rank = 0
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] rank={rank} | {message}", flush=True)
+
+
+def _get_env_limit(name: str) -> Optional[int]:
+    """환경 변수에서 양의 정수 제한 값을 읽어 반환한다."""
+
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _log_epoch_event(logger: logging.Logger, epoch: int, split: str, metrics: Dict[str, Any]) -> None:
+    """JSONL 이벤트 로그 파일에 에폭 단위 지표를 기록한다."""
+
+    payload: Dict[str, Any] = {
+        "event": "epoch_metrics",
+        "epoch": int(epoch),
+        "split": split,
+        "loss": float(metrics.get("loss", 0.0) or 0.0),
+        "acc": float(metrics.get("acc", 0.0) or 0.0),
+    }
+    if "auc" in metrics:
+        try:
+            payload["auc"] = float(metrics.get("auc", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pass
+    if "ece" in metrics:
+        try:
+            payload["ece"] = float(metrics.get("ece", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pass
+    logger.info(json.dumps(payload, ensure_ascii=False))
 
 @dataclass
 class TrainCfg:
@@ -708,6 +745,9 @@ class Trainer:
                 steps_limit = max(0, int(self.cfg.val_steps_limit))
             except (TypeError, ValueError):
                 steps_limit = 0
+        env_val_limit = _get_env_limit("TVB_VAL_MAX_STEPS")
+        if env_val_limit is not None:
+            steps_limit = env_val_limit
         try:
             total_batches = len(self.val_loader)
         except TypeError:
@@ -765,11 +805,8 @@ class Trainer:
                 total_acc += correct
                 total_count += float(batch_size)
 
-                gathered_logits = self.accel.gather_for_metrics(logits.detach())
-                gathered_targets = self.accel.gather_for_metrics(targets)
-                if gathered_logits.numel() > 0:
-                    logits_collector.append(gathered_logits.cpu())
-                    targets_collector.append(gathered_targets.cpu())
+                logits_collector.append(logits.detach().cpu())
+                targets_collector.append(targets.detach().cpu())
             elif (
                 isinstance(batch, list)
                 and batch
@@ -855,11 +892,8 @@ class Trainer:
                     targets_batch = torch.tensor(
                         image_targets, device=self.accel.device, dtype=torch.long
                     )
-                    gathered_logits = self.accel.gather_for_metrics(logits_batch)
-                    gathered_targets = self.accel.gather_for_metrics(targets_batch)
-                    if gathered_logits.numel() > 0:
-                        logits_collector.append(gathered_logits.cpu())
-                        targets_collector.append(gathered_targets.cpu())
+                    logits_collector.append(logits_batch.detach().cpu())
+                    targets_collector.append(targets_batch.detach().cpu())
             else:
                 batch_logits_gpu: List[torch.Tensor] = []
                 batch_targets_gpu: List[int] = []
@@ -904,11 +938,8 @@ class Trainer:
                     targets_batch = torch.tensor(
                         batch_targets_gpu, device=self.accel.device, dtype=torch.long
                     )
-                    gathered_logits = self.accel.gather_for_metrics(logits_batch)
-                    gathered_targets = self.accel.gather_for_metrics(targets_batch)
-                    if gathered_logits.numel() > 0:
-                        logits_collector.append(gathered_logits.cpu())
-                        targets_collector.append(gathered_targets.cpu())
+                    logits_collector.append(logits_batch.detach().cpu())
+                    targets_collector.append(targets_batch.detach().cpu())
 
             if pbar is not None:
                 avg_loss = total_loss / max(1, total_count)
@@ -933,13 +964,68 @@ class Trainer:
         total_count = float(summary_tensor[2].item())
 
         metrics = {"loss": total_loss / max(1.0, total_count), "acc": total_acc / max(1.0, total_count)}
-        if logits_collector:
-            logits_cat = torch.cat(logits_collector)
-            targets_cat = torch.cat(targets_collector).long()
-            bundle = classification_metrics(logits_cat, targets_cat)
-            bundle.loss = metrics["loss"]
-            bundle.acc = metrics["acc"]
-            metrics.update(bundle.as_dict())
+        logits_cat = torch.cat(logits_collector) if logits_collector else torch.empty(0, 0)
+        targets_cat = torch.cat(targets_collector).long() if targets_collector else torch.empty(0, dtype=torch.long)
+        if logits_cat.dim() == 2 and logits_cat.numel() > 0:
+            num_classes = logits_cat.size(1)
+        else:
+            num_classes = int(getattr(self.model, "num_classes", 2) or 2)
+            logits_cat = logits_cat.view(-1, num_classes)
+
+        logits_device = logits_cat.to(self.accel.device, dtype=torch.float32)
+        targets_device = targets_cat.to(self.accel.device, dtype=torch.long)
+
+        padded_logits = self.accel.pad_across_processes(
+            logits_device,
+            dim=0,
+            pad_index=0.0,
+        )
+        padded_targets = self.accel.pad_across_processes(
+            targets_device,
+            dim=0,
+            pad_index=-1,
+        )
+
+        local_len_tensor = torch.tensor([logits_device.shape[0]], device=self.accel.device, dtype=torch.long)
+        gathered_lengths = self.accel.gather(local_len_tensor)
+        gathered_logits = self.accel.gather(padded_logits)
+        gathered_targets = self.accel.gather(padded_targets)
+
+        all_lengths: list[int] = []
+        if gathered_lengths is not None:
+            all_lengths = [int(val) for val in gathered_lengths.long().cpu().tolist()]
+        else:
+            all_lengths = [int(local_len_tensor.item())]
+
+        merged_logits: list[torch.Tensor] = []
+        merged_targets: list[torch.Tensor] = []
+        if gathered_logits is not None and gathered_targets is not None:
+            max_len = padded_logits.shape[0]
+            gathered_logits_cpu = gathered_logits.detach().cpu()
+            gathered_targets_cpu = gathered_targets.detach().cpu()
+            for idx, length in enumerate(all_lengths):
+                if length <= 0:
+                    continue
+                start = idx * max_len
+                end = start + max_len
+                logits_slice = gathered_logits_cpu[start:end][:length]
+                targets_slice = gathered_targets_cpu[start:end][:length]
+                if logits_slice.numel() == 0 or targets_slice.numel() == 0:
+                    continue
+                valid_mask = targets_slice >= 0
+                if not torch.any(valid_mask):
+                    continue
+                merged_logits.append(logits_slice[valid_mask])
+                merged_targets.append(targets_slice[valid_mask])
+
+        if merged_logits and merged_targets:
+            logits_global = torch.cat(merged_logits, dim=0)
+            targets_global = torch.cat(merged_targets, dim=0).long()
+            if logits_global.numel() > 0 and targets_global.numel() > 0:
+                bundle = classification_metrics(logits_global, targets_global)
+                bundle.loss = metrics["loss"]
+                bundle.acc = metrics["acc"]
+                metrics.update(bundle.as_dict())
         metrics.setdefault("val_loss", metrics["loss"])
         metrics.setdefault("val_acc", metrics["acc"])
         return metrics
@@ -1001,6 +1087,16 @@ class Trainer:
             else:
                 steps_limit = max(1, min(int(steps_target), max_steps_available))
 
+            env_train_limit = _get_env_limit("TVB_TRAIN_MAX_STEPS")
+            if env_train_limit is not None:
+                steps_limit = max(1, min(env_train_limit, steps_limit))
+                if self.accel.is_main_process and epoch == 1:
+                    self.system_logger.info(
+                        "환경 변수 TVB_TRAIN_MAX_STEPS=%d 적용 - 실제 학습 스텝 %d",
+                        env_train_limit,
+                        steps_limit,
+                    )
+
             train_metrics = self._train_one_epoch(epoch, steps_limit)
             val_metrics = self._validate()
             last_val_metrics = val_metrics
@@ -1033,6 +1129,8 @@ class Trainer:
                 val_metrics.get("tpr@fpr=1%", 0.0),
             )
 
+            _log_epoch_event(self.train_logger, epoch, "train", train_metrics)
+            _log_epoch_event(self.train_logger, epoch, "val", val_metrics)
             self.experiment.log_metrics(epoch, "train", train_metrics)
             self.experiment.log_metrics(epoch, "val", val_metrics)
 
