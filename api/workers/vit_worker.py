@@ -47,7 +47,18 @@ async def run_analysis(
     owns_service = vit_service is None
     calibrator_obj = calibrator or AdaptiveThresholdCalibrator(settings_obj)
 
-    await service.ensure_ready()
+    params_dict: Dict[str, Any] = (
+        dict(params) if isinstance(params, dict) else {}
+    )
+    model_key_candidate = str(
+        params_dict.get("modelKey") or params_dict.get("model_key") or ""
+    ).strip() or None
+    if not model_key_candidate and isinstance(model, dict):
+        candidate = str(model.get("key") or "").strip()
+        if candidate:
+            model_key_candidate = candidate
+
+    await service.ensure_ready(model_key_candidate)
     media_path = Path(settings_obj.file_store_root) / upload_id
     if not media_path.is_file():
         await publish_failed(
@@ -57,8 +68,24 @@ async def run_analysis(
     start = time.perf_counter()
     try:
         with Image.open(media_path) as image:
-            probs, inference_meta = await service.predict_image_with_metadata(image)
-        pipeline = await service.get_pipeline()
+            probs, inference_meta = await service.predict_image_with_metadata(
+                image, model_key=model_key_candidate
+            )
+        pipeline = await service.get_pipeline(model_key_candidate)
+        model_key_running = pipeline.model_key
+        params_dict["modelKey"] = model_key_running
+
+        model_info = pipeline.model_info
+        model_payload = {
+            "key": model_info.key,
+            "name": model_info.name,
+            "version": model_info.version,
+            "type": model_info.type,
+            "description": model_info.description,
+            "input": model_info.input,
+            "threshold": model_info.threshold,
+            "labels": list(model_info.labels),
+        }
 
         calibration = calibrator_obj.calibrate(probs, pipeline.real_index)
         latency_ms = round((time.perf_counter() - start) * 1000.0, 2)
@@ -84,8 +111,11 @@ async def run_analysis(
         )
         heatmap_score = _resolve_heatmap_score(heatmap_meta)
 
+        model_version_label = model_info.version or pipeline.model_name or model_info.key
+
         result_payload = {
-            "modelVersion": pipeline.model_name,
+            "modelKey": model_key_running,
+            "modelVersion": str(model_version_label),
             "classNames": pipeline.class_names,
             "probabilities": [float(p) for p in calibration.distribution],
             "pReal": float(calibration.p_real),
@@ -114,8 +144,8 @@ async def run_analysis(
                 "uncertainty_band_adjusted": inference_meta.get("uncertainty_band_adjusted"),
                 "partial_suspected": inference_meta.get("partial_suspected"),
             },
-            "params": params or {},
-            "model": model or {},
+            "params": params_dict,
+            "model": model_payload,
         }
         if heatmap_score is not None:
             result_payload["heatmap_score"] = heatmap_score
@@ -125,8 +155,9 @@ async def run_analysis(
             )
 
         LOGGER.info(
-            "워커 추론 완료 - jobId=%s label=%s pAi=%.4f latencyMs=%.2f",
+            "워커 추론 완료 - jobId=%s model=%s label=%s pAi=%.4f latencyMs=%.2f",
             job_id,
+            model_key_running,
             label,
             float(calibration.p_ai),
             latency_ms,
@@ -134,8 +165,9 @@ async def run_analysis(
         if isinstance(inference_meta, dict):
             patch_stats = inference_meta.get("patch_stats", {})
             LOGGER.debug(
-                "패치 통계 - jobId=%s count=%s best_ai=%.3f weighted_ai=%.3f partial=%s",
+                "패치 통계 - jobId=%s model=%s count=%s best_ai=%.3f weighted_ai=%.3f partial=%s",
                 job_id,
+                model_key_running,
                 inference_meta.get("patch_count"),
                 float(patch_stats.get("best_ai", 0.0)),
                 float(patch_stats.get("weighted_ai", 0.0)),

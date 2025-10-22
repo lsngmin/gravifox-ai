@@ -32,18 +32,22 @@ from core.utils.logger import get_logger, log_time
 
 from api.config import RuntimeSettings
 from api.services.batching import BatchInferenceQueue
+from api.services.registry import ModelInfo, ModelRegistryService
 
 
 @dataclass
 class VitPipeline:
     """ViT 추론에 필요한 리소스를 보관한다."""
 
+    model_key: str
+    model_info: ModelInfo
     model: torch.nn.Module
     transform: Any
     device: torch.device
     class_names: List[str]
     real_index: int
     run_dir: Path
+    checkpoint_path: Path
     model_name: str
     inference_mode: str
     inference_scales: Tuple[int, ...]
@@ -59,49 +63,63 @@ class VitPipeline:
 class VitInferenceService:
     """ViT 이미지 추론을 관리하는 서비스."""
 
-    def __init__(self, settings: RuntimeSettings) -> None:
+    def __init__(
+        self,
+        settings: RuntimeSettings,
+        registry: Optional[ModelRegistryService] = None,
+    ) -> None:
         """서비스를 초기화한다.
 
         Args:
             settings: 런타임 환경 설정.
+            registry: 모델 카탈로그 서비스 (테스트 용도).
         """
 
         self._settings = settings
         self._logger = get_logger("api.services.inference")
-        self._pipeline: Optional[VitPipeline] = None
-        self._init_error: Optional[Exception] = None
-        self._init_lock = asyncio.Lock()
-        self._predict_lock = asyncio.Lock()
-        self._batch_queue = BatchInferenceQueue(
-            max_batch_size=settings.vit_max_batch_size,
-            max_wait_ms=settings.vit_max_batch_wait_ms,
-            runner=self._predict_batch,
-            queue_name="vit",
-        )
+        self._registry = registry or ModelRegistryService(settings)
+        self._pipelines: Dict[str, VitPipeline] = {}
+        self._pipeline_errors: Dict[str, Exception] = {}
+        self._pipeline_locks: Dict[str, asyncio.Lock] = {}
+        self._batch_queues: Dict[str, BatchInferenceQueue] = {}
+        self._predict_locks: Dict[str, asyncio.Lock] = {}
 
-    async def startup(self) -> None:
-        """FastAPI 애플리케이션 시작 시 초기화를 수행한다."""
+    async def startup(self, model_key: Optional[str] = None) -> None:
+        """FastAPI 애플리케이션 시작 시 기본 파이프라인을 준비한다."""
 
-        await self.ensure_ready()
-        await self._batch_queue.start()
+        await self.ensure_ready(model_key)
 
     async def shutdown(self) -> None:
         """FastAPI 종료 시 자원을 정리한다."""
 
-        await self._batch_queue.close()
+        queues = list(self._batch_queues.values())
+        self._batch_queues.clear()
+        try:
+            for queue in queues:
+                await queue.close()
+        finally:
+            self._pipelines.clear()
+            self._pipeline_errors.clear()
+            self._pipeline_locks.clear()
+            self._predict_locks.clear()
 
-    async def predict_image(self, image: Image.Image) -> List[float]:
+    async def predict_image(
+        self, image: Image.Image, model_key: Optional[str] = None
+    ) -> List[float]:
         """이미지에 대한 위조 확률 분포를 반환한다."""
 
-        probs, _ = await self.predict_image_with_metadata(image)
+        probs, _ = await self.predict_image_with_metadata(image, model_key=model_key)
         return probs
 
     async def predict_image_with_metadata(
-        self, image: Image.Image
+        self, image: Image.Image, model_key: Optional[str] = None
     ) -> Tuple[List[float], Dict[str, Any]]:
         """이미지 추론과 함께 메타데이터를 반환한다."""
 
-        pipeline = await self._ensure_pipeline()
+        model_info = self._resolve_model_info(model_key)
+        pipeline = await self._ensure_pipeline(model_info.key)
+        queue = self._get_batch_queue(model_info.key)
+
         metadata: Dict[str, Any] = {
             "mode": pipeline.inference_mode,
             "n_patches": pipeline.inference_n_patches,
@@ -112,6 +130,7 @@ class VitInferenceService:
             "jitter": pipeline.inference_jitter,
             "max_patches": pipeline.inference_max_patches,
             "uncertainty_band": list(pipeline.uncertainty_band),
+            "model_key": pipeline.model_key,
         }
 
         rgb_image = image if image.mode == "RGB" else image.convert("RGB")
@@ -132,13 +151,14 @@ class VitInferenceService:
                 if priority_regions:
                     metadata["priority_regions"] = priority_regions
                 self._logger.info(
-                    "멀티패치 추론 시작 - patches=%d scales=%s aggregate=%s",
+                    "멀티패치 추론 시작 - model=%s patches=%d scales=%s aggregate=%s",
+                    pipeline.model_key,
                     len(patch_entries),
                     list(pipeline.inference_scales),
                     pipeline.inference_aggregate,
                 )
                 patch_futures = [
-                    self._batch_queue.enqueue(tensor) for tensor, _ in patch_entries
+                    queue.enqueue(tensor) for tensor, _ in patch_entries
                 ]
                 patch_distributions = await asyncio.gather(*patch_futures)
                 (
@@ -164,18 +184,30 @@ class VitInferenceService:
                     metadata["uncertainty_band_adjusted"] = list(adjusted_band)
                     metadata["partial_suspected"] = bool(partial_flag)
                     self._logger.debug(
-                        "패치 통계 - count=%d best_ai=%.3f weighted_ai=%.3f partial=%s",
+                        "패치 통계 - model=%s count=%d best_ai=%.3f weighted_ai=%.3f partial=%s",
+                        pipeline.model_key,
                         len(patch_entries),
                         patch_stats.get("best_ai", 0.0),
                         patch_stats.get("weighted_ai", 0.0),
                         str(partial_flag),
                     )
-                real_idx = pipeline.real_index if pipeline.real_index < len(aggregated) else 0
+                real_idx = (
+                    pipeline.real_index if pipeline.real_index < len(aggregated) else 0
+                )
                 ai_idx = 1 if real_idx == 0 else 0
-                real_score = float(aggregated[real_idx]) if 0 <= real_idx < len(aggregated) else float("nan")
-                ai_score = float(aggregated[ai_idx]) if 0 <= ai_idx < len(aggregated) else float("nan")
+                real_score = (
+                    float(aggregated[real_idx])
+                    if 0 <= real_idx < len(aggregated)
+                    else float("nan")
+                )
+                ai_score = (
+                    float(aggregated[ai_idx])
+                    if 0 <= ai_idx < len(aggregated)
+                    else float("nan")
+                )
                 self._logger.info(
-                    "멀티패치 추론 완료 - patches=%d real=%.4f ai=%.4f",
+                    "멀티패치 추론 완료 - model=%s patches=%d real=%.4f ai=%.4f",
+                    pipeline.model_key,
                     len(patch_entries),
                     real_score,
                     ai_score,
@@ -187,87 +219,121 @@ class VitInferenceService:
         metadata["patch_count"] = 1
         if priority_regions:
             metadata.setdefault("priority_regions", priority_regions)
-        probs = await self._batch_queue.enqueue(tensor)
+        probs = await queue.enqueue(tensor)
         return probs, metadata
 
-    async def ensure_ready(self) -> None:
-        """파이프라인 초기화가 완료되도록 보장한다.
+    async def ensure_ready(self, model_key: Optional[str] = None) -> None:
+        """파이프라인 초기화가 완료되도록 보장한다."""
 
-        Returns:
-            없음.
-        """
+        await self._ensure_pipeline(model_key)
 
-        await self._ensure_pipeline()
+    async def get_pipeline(
+        self, model_key: Optional[str] = None
+    ) -> VitPipeline:
+        """현재 파이프라인 정보를 반환한다."""
 
-    async def get_pipeline(self) -> VitPipeline:
-        """현재 파이프라인 정보를 반환한다.
+        return await self._ensure_pipeline(model_key)
 
-        Returns:
-            초기화된 파이프라인 객체.
-        """
+    async def _ensure_pipeline(
+        self, model_key: Optional[str] = None
+    ) -> VitPipeline:
+        """요청된 모델 키에 대한 파이프라인을 초기화하거나 반환한다."""
 
-        return await self._ensure_pipeline()
+        model_info = self._resolve_model_info(model_key)
+        key = model_info.key
 
-    async def _ensure_pipeline(self) -> VitPipeline:
-        """내부 파이프라인을 초기화하거나 반환한다.
+        pipeline = self._pipelines.get(key)
+        if pipeline is not None:
+            return pipeline
 
-        Returns:
-            초기화된 파이프라인 객체.
-        """
+        if key in self._pipeline_errors:
+            error = self._pipeline_errors[key]
+            raise RuntimeError(f"모델 초기화 실패: {error}") from error
 
-        if self._pipeline is not None:
-            return self._pipeline
-        if self._init_error is not None:
-            raise RuntimeError(
-                f"모델 초기화 실패: {self._init_error}"
-            ) from self._init_error
-        async with self._init_lock:
-            if self._pipeline is not None:
-                return self._pipeline
-            if self._init_error is not None:
-                raise RuntimeError(
-                    f"모델 초기화 실패: {self._init_error}"
-                ) from self._init_error
+        lock = self._pipeline_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            pipeline = self._pipelines.get(key)
+            if pipeline is not None:
+                return pipeline
+            if key in self._pipeline_errors:
+                error = self._pipeline_errors[key]
+                raise RuntimeError(f"모델 초기화 실패: {error}") from error
             try:
-                self._pipeline = self._initialize_pipeline()
+                pipeline = self._initialize_pipeline(model_info)
+                self._pipelines[key] = pipeline
+                queue = self._create_batch_queue(key)
+                self._batch_queues[key] = queue
+                await queue.start()
                 self._logger.info(
-                    "VIT 추론 파이프라인 초기화 완료 - run=%s checkpoint=%s device=%s",
-                    self._pipeline.run_dir,
-                    self._settings.vit_checkpoint_name,
-                    self._pipeline.device,
+                    "VIT 파이프라인 초기화 완료 - model=%s name=%s device=%s checkpoint=%s",
+                    key,
+                    pipeline.model_name,
+                    pipeline.device,
+                    pipeline.checkpoint_path,
                 )
             except Exception as exc:  # pragma: no cover - 초기화 실패 시 로그
-                self._init_error = exc
-                self._logger.exception("VIT 추론 파이프라인 초기화 실패")
+                self._pipeline_errors[key] = exc
+                self._logger.exception(
+                    "VIT 추론 파이프라인 초기화 실패 - model=%s", key
+                )
                 raise
-        return self._pipeline
+        return pipeline
+
+    def _resolve_model_info(self, model_key: Optional[str]) -> ModelInfo:
+        """모델 키를 기준으로 카탈로그 정보를 조회한다."""
+
+        return self._registry.resolve_model(model_key)
+
+    def resolve_model(self, model_key: Optional[str]) -> ModelInfo:
+        """외부에서 모델 정보를 조회할 수 있도록 한다."""
+
+        return self._resolve_model_info(model_key)
+
+    def _get_batch_queue(self, model_key: str) -> BatchInferenceQueue:
+        """모델 키에 대응하는 배치 큐를 반환한다."""
+
+        queue = self._batch_queues.get(model_key)
+        if queue is None:
+            raise RuntimeError(f"배치 큐가 초기화되지 않았습니다: {model_key}")
+        return queue
+
+    def _create_batch_queue(self, model_key: str) -> BatchInferenceQueue:
+        """모델 전용 배치 큐를 생성한다."""
+
+        async def _runner(batch: torch.Tensor) -> torch.Tensor:
+            return await self._predict_batch(batch, model_key)
+
+        return BatchInferenceQueue(
+            max_batch_size=self._settings.vit_max_batch_size,
+            max_wait_ms=self._settings.vit_max_batch_wait_ms,
+            runner=_runner,
+            queue_name=f"vit.{model_key}",
+        )
 
     @log_time
-    def _initialize_pipeline(self) -> VitPipeline:
-        """파이프라인 구성 요소를 동기적으로 초기화한다.
-
-        Returns:
-            초기화된 파이프라인 데이터.
-        """
+    def _initialize_pipeline(self, model_info: ModelInfo) -> VitPipeline:
+        """지정된 모델 정보로 파이프라인을 초기화한다."""
 
         device = self._resolve_device()
-        run_dir = self._resolve_run_dir()
-        meta = self._load_meta(run_dir)
+        run_dir, meta_path, checkpoint_path = self._resolve_model_paths(model_info)
+        meta = self._load_meta(run_dir, meta_path)
         transform = self._build_transform(meta)
-        checkpoint = self._resolve_checkpoint(run_dir)
-        model = self._load_model(meta, checkpoint, device)
-        class_names = self._resolve_class_names(meta)
+        model = self._load_model(meta, checkpoint_path, device)
+        class_names = self._resolve_class_names(meta, model_info)
         real_index = self._resolve_real_index(class_names)
         model_cfg = meta.get("model") or {}
-        model_name = str(model_cfg.get("name") or "unknown")
-        inference_cfg = self._resolve_inference_config(meta)
+        model_name = str(model_cfg.get("name") or model_info.name or model_info.key)
+        inference_cfg = self._resolve_inference_config(meta, model_info)
         return VitPipeline(
+            model_key=model_info.key,
+            model_info=model_info,
             model=model,
             transform=transform,
             device=device,
             class_names=class_names,
             real_index=real_index,
             run_dir=run_dir,
+            checkpoint_path=checkpoint_path,
             model_name=model_name,
             **inference_cfg,
         )
@@ -285,7 +351,7 @@ class VitInferenceService:
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     @log_time
-    def _resolve_run_dir(self) -> Path:
+    def _resolve_default_run_dir(self) -> Path:
         """실험 실행 디렉터리를 결정한다.
 
         Returns:
@@ -317,20 +383,21 @@ class VitInferenceService:
         return candidates[-1]
 
     @log_time
-    def _load_meta(self, run_dir: Path) -> dict[str, Any]:
+    def _load_meta(self, run_dir: Path, meta_path: Optional[Path] = None) -> Dict[str, Any]:
         """meta.yaml 파일을 로드한다.
 
         Args:
             run_dir: 실험 실행 디렉터리.
+            meta_path: 명시적으로 지정된 meta 파일 경로.
 
         Returns:
             meta.yaml 파싱 결과.
         """
 
-        meta_path = run_dir / "meta.yaml"
-        if not meta_path.is_file():
-            raise FileNotFoundError(f"meta.yaml을 찾을 수 없습니다: {meta_path}")
-        with meta_path.open("r", encoding="utf-8") as fp:
+        path = meta_path or (run_dir / "meta.yaml")
+        if not path.is_file():
+            raise FileNotFoundError(f"meta.yaml을 찾을 수 없습니다: {path}")
+        with path.open("r", encoding="utf-8") as fp:
             return yaml.safe_load(fp) or {}
 
     @log_time
@@ -349,17 +416,24 @@ class VitInferenceService:
         return build_val_transforms(config)
 
     @log_time
-    def _resolve_checkpoint(self, run_dir: Path) -> Path:
+    def _resolve_checkpoint(
+        self, run_dir: Path, *, preferred_name: Optional[str] = None
+    ) -> Path:
         """사용할 체크포인트 경로를 반환한다.
 
         Args:
             run_dir: 실험 실행 디렉터리.
+            preferred_name: 우선 사용할 체크포인트 파일명.
 
         Returns:
             체크포인트 파일 경로.
         """
 
-        preferred = self._settings.vit_checkpoint_name or "best.pt"
+        preferred = (
+            (preferred_name or "").strip()
+            or (self._settings.vit_checkpoint_name or "").strip()
+            or "best.pt"
+        )
         ckpt_path = run_dir / "checkpoints" / preferred
         if ckpt_path.is_file():
             return ckpt_path
@@ -409,7 +483,77 @@ class VitInferenceService:
         model.eval()
         return model
 
-    def _resolve_class_names(self, meta: dict[str, Any]) -> List[str]:
+    def _resolve_model_paths(self, model_info: ModelInfo) -> Tuple[Path, Path, Path]:
+        """모델 실행에 필요한 디렉터리와 파일 경로를 결정한다."""
+
+        extras = model_info.extras or {}
+
+        def _resolve_path(value: object) -> Path:
+            path = Path(str(value))
+            if not path.is_absolute():
+                path = (model_info.catalog_dir / path).resolve()
+            return path
+
+        run_dir: Optional[Path] = None
+        checkpoint_path: Optional[Path] = None
+        meta_path: Optional[Path] = None
+
+        resource = model_info.file_path
+        if resource.exists():
+            if resource.is_dir():
+                run_dir = resource
+            elif resource.is_file():
+                checkpoint_path = resource
+                run_dir = resource.parent
+
+        run_dir_override = extras.get("run_dir") or extras.get("runDir")
+        if run_dir_override:
+            run_dir = _resolve_path(run_dir_override)
+
+        checkpoint_override = (
+            extras.get("checkpoint")
+            or extras.get("checkpoint_path")
+            or extras.get("checkpointPath")
+        )
+        if checkpoint_override:
+            checkpoint_path = _resolve_path(checkpoint_override)
+
+        meta_override = extras.get("meta") or extras.get("meta_file") or extras.get(
+            "metaFile"
+        )
+        if meta_override:
+            meta_path = _resolve_path(meta_override)
+
+        if run_dir is None:
+            run_dir = self._resolve_default_run_dir()
+
+        if meta_path is None:
+            meta_path = run_dir / "meta.yaml"
+
+        if not meta_path.is_file():
+            raise FileNotFoundError(f"meta.yaml을 찾을 수 없습니다: {meta_path}")
+
+        checkpoint_name_override = (
+            extras.get("checkpoint_name") or extras.get("checkpointName")
+        )
+        if checkpoint_path is None:
+            checkpoint_path = self._resolve_checkpoint(
+                run_dir,
+                preferred_name=str(checkpoint_name_override)
+                if checkpoint_name_override
+                else None,
+            )
+
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"체크포인트를 찾을 수 없습니다: {checkpoint_path}"
+            )
+
+        return run_dir, meta_path, checkpoint_path
+
+    def _resolve_class_names(
+        self, meta: dict[str, Any], model_info: ModelInfo
+    ) -> List[str]:
         """클래스 이름 목록을 반환한다.
 
         Args:
@@ -421,15 +565,24 @@ class VitInferenceService:
 
         class_names = meta.get("dataset", {}).get("class_names")
         if isinstance(class_names, list):
-                return [str(name) for name in class_names]
+            return [str(name) for name in class_names]
         if isinstance(class_names, tuple):
             return [str(name) for name in class_names]
-        return []
+        if model_info.labels:
+            return [str(label) for label in model_info.labels]
+        return ["REAL", "FAKE"]
 
-    def _resolve_inference_config(self, meta: dict[str, Any]) -> Dict[str, Any]:
+    def _resolve_inference_config(
+        self, meta: dict[str, Any], model_info: ModelInfo
+    ) -> Dict[str, Any]:
         """멀티패치/멀티스케일 추론 설정을 계산한다."""
 
-        raw_cfg = meta.get("inference") or {}
+        base_cfg = meta.get("inference") or {}
+        raw_cfg = dict(base_cfg)
+        extras_cfg = model_info.extras.get("inference")
+        if isinstance(extras_cfg, dict):
+            raw_cfg.update(extras_cfg)
+
         raw_scales = raw_cfg.get("multiscale") or raw_cfg.get("scales") or ()
         if isinstance(raw_scales, (int, float)):
             scales = (int(raw_scales),)
@@ -914,18 +1067,24 @@ class VitInferenceService:
         cells_payload.sort(key=lambda item: (item["row"], item["col"]))
         return {"rows": rows, "cols": cols, "cells": cells_payload}
 
-    async def _predict_batch(self, batch: torch.Tensor) -> torch.Tensor:
+    async def _predict_batch(
+        self, batch: torch.Tensor, model_key: str
+    ) -> torch.Tensor:
         """비동기 배치 추론을 실행한다.
 
         Args:
             batch: (N, C, H, W) 형태의 입력 텐서.
+            model_key: 사용할 모델 키.
 
         Returns:
             소프트맥스 확률 텐서.
         """
 
-        pipeline = await self._ensure_pipeline()
-        async with self._predict_lock:
+        pipeline = self._pipelines.get(model_key)
+        if pipeline is None:
+            pipeline = await self._ensure_pipeline(model_key)
+        lock = self._predict_locks.setdefault(model_key, asyncio.Lock())
+        async with lock:
             with torch.inference_mode():
                 device_batch = batch.to(pipeline.device, non_blocking=True)
                 logits = pipeline.model(device_batch)

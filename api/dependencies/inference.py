@@ -45,7 +45,10 @@ def _vit_service_singleton() -> VitInferenceService:
         ViT 추론 서비스 인스턴스.
     """
 
-    return VitInferenceService(get_runtime_settings())
+    return VitInferenceService(
+        get_runtime_settings(),
+        registry=get_model_registry(),
+    )
 
 
 def get_vit_service() -> VitInferenceService:

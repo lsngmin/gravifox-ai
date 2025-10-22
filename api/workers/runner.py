@@ -64,10 +64,11 @@ async def main() -> None:
     await vit_service.ensure_ready()
     pipeline = await vit_service.get_pipeline()
     LOGGER.info(
-        "분석 워커 준비 완료 - queue=%s device=%s model=%s",
+        "분석 워커 준비 완료 - queue=%s device=%s model=%s (%s)",
         settings.request_queue,
         pipeline.device,
-        pipeline.model_name,
+        pipeline.model_info.name,
+        pipeline.model_key,
     )
 
     async def _consumer(payload: Dict[str, Any]) -> None:

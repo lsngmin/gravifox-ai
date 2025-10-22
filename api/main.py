@@ -59,11 +59,21 @@ async def on_startup() -> None:
                 job_id = str(payload.get("jobId") or "").strip()
                 upload_id = str(payload.get("uploadId") or "").strip()
                 params = payload.get("params")
+                if not isinstance(params, dict):
+                    params = {}
+                model_info = payload.get("model") if isinstance(payload.get("model"), dict) else None
                 if not job_id or not upload_id:
                     LOGGER.warning("잘못된 analyze.request payload: %s", payload)
                     return
                 try:
-                    await run_analysis(mq, job_id, upload_id, params)
+                    await run_analysis(
+                        mq,
+                        job_id,
+                        upload_id,
+                        params,
+                        vit_service=vit_service,
+                        model=model_info,
+                    )
                 except Exception:  # pragma: no cover - 워커 예외 로깅
                     LOGGER.exception("요청 처리 중 예외 발생 jobId=%s uploadId=%s", job_id, upload_id)
 
