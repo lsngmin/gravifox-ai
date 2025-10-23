@@ -531,12 +531,6 @@ class VitInferenceService:
         if checkpoint_override:
             checkpoint_path = _resolve_path(checkpoint_override)
 
-        meta_override = extras.get("meta") or extras.get("meta_file") or extras.get(
-            "metaFile"
-        )
-        if meta_override:
-            meta_path = _resolve_path(meta_override)
-
         if run_dir is None and self._settings.vit_run_dir is not None:
             configured_run_dir = self._settings.vit_run_dir
             if configured_run_dir.is_dir():
@@ -578,14 +572,17 @@ class VitInferenceService:
                 f"체크포인트를 찾을 수 없습니다: {checkpoint_path}"
             )
 
-        if meta_path is None:
-            meta_path = run_dir / "meta.yaml"
+        meta_override = extras.get("meta") or extras.get("meta_file") or extras.get(
+            "metaFile"
+        )
 
-        if not meta_path.is_file():
-            fallback_candidates: List[Path] = []
+        meta_candidates: List[Path] = []
+        if meta_override:
+            meta_candidates.append(_resolve_path(meta_override))
+        else:
             if checkpoint_path is not None:
                 stem = checkpoint_path.stem
-                fallback_candidates.extend(
+                meta_candidates.extend(
                     [
                         checkpoint_path.with_suffix(".yaml"),
                         checkpoint_path.with_suffix(".yml"),
@@ -593,24 +590,37 @@ class VitInferenceService:
                         checkpoint_path.with_name(f"{stem}.meta.yml"),
                     ]
                 )
-            fallback_candidates.append(run_dir / "meta.yaml")
-            seen: set[Path] = set()
-            resolved_meta: Optional[Path] = None
-            for candidate in fallback_candidates:
-                if candidate is None:
-                    continue
-                path = candidate.resolve()
-                if path in seen:
-                    continue
-                seen.add(path)
-                if path.is_file():
-                    resolved_meta = path
-                    break
-            if resolved_meta is None:
-                raise FileNotFoundError(
-                    f"meta.yaml을 찾을 수 없습니다: {meta_path}"
+            if run_dir is not None:
+                meta_candidates.extend(
+                    [
+                        run_dir / "meta.yaml",
+                        run_dir / "meta.yml",
+                    ]
                 )
-            meta_path = resolved_meta
+
+        resolved_meta: Optional[Path] = None
+        checked: List[Path] = []
+        for candidate in meta_candidates:
+            if candidate is None:
+                continue
+            candidate_path = candidate.expanduser()
+            try:
+                resolved = candidate_path.resolve()
+            except FileNotFoundError:
+                resolved = candidate_path.resolve(strict=False)
+            if resolved in checked:
+                continue
+            checked.append(resolved)
+            if resolved.is_file():
+                resolved_meta = resolved
+                break
+
+        if resolved_meta is None:
+            candidates_text = ", ".join(str(path) for path in checked) or "없음"
+            raise FileNotFoundError(
+                f"meta 설정 파일을 찾을 수 없습니다 (검토 경로: {candidates_text})"
+            )
+        meta_path = resolved_meta
 
         return run_dir, meta_path, checkpoint_path
 
