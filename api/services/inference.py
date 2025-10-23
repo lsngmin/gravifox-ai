@@ -35,6 +35,9 @@ from api.services.batching import BatchInferenceQueue
 from api.services.registry import ModelInfo, ModelRegistryService
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
 @dataclass
 class VitPipeline:
     """ViT 추론에 필요한 리소스를 보관한다."""
@@ -489,10 +492,20 @@ class VitInferenceService:
         extras = model_info.extras or {}
 
         def _resolve_path(value: object) -> Path:
-            path = Path(str(value))
-            if not path.is_absolute():
-                path = (model_info.catalog_dir / path).resolve()
-            return path
+            raw = Path(str(value)).expanduser()
+            if raw.is_absolute():
+                return raw.resolve()
+            candidates = [
+                (model_info.catalog_dir / raw),
+                (self._settings.vit_run_root / raw),
+                (PROJECT_ROOT / raw),
+            ]
+            for candidate in candidates:
+                resolved = candidate.expanduser().resolve()
+                if resolved.exists():
+                    return resolved
+            # 존재하지 않더라도 첫 번째 후보를 기준으로 경로를 반환한다.
+            return (model_info.catalog_dir / raw).expanduser().resolve()
 
         run_dir: Optional[Path] = None
         checkpoint_path: Optional[Path] = None
@@ -501,10 +514,10 @@ class VitInferenceService:
         resource = model_info.file_path
         if resource.exists():
             if resource.is_dir():
-                run_dir = resource
+                run_dir = resource.resolve()
             elif resource.is_file():
-                checkpoint_path = resource
-                run_dir = resource.parent
+                checkpoint_path = resource.resolve()
+                run_dir = resource.parent.resolve()
 
         run_dir_override = extras.get("run_dir") or extras.get("runDir")
         if run_dir_override:
@@ -524,8 +537,30 @@ class VitInferenceService:
         if meta_override:
             meta_path = _resolve_path(meta_override)
 
+        if run_dir is None and self._settings.vit_run_dir is not None:
+            configured_run_dir = self._settings.vit_run_dir
+            if configured_run_dir.is_dir():
+                run_dir = configured_run_dir.resolve()
+
+        if checkpoint_path is not None and not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"모델 {model_info.key}의 체크포인트를 찾을 수 없습니다: {checkpoint_path}"
+            )
+
+        if run_dir is None and checkpoint_path is not None:
+            candidate_dir = checkpoint_path.parent
+            if candidate_dir.is_dir():
+                run_dir = candidate_dir.resolve()
+
         if run_dir is None:
-            run_dir = self._resolve_default_run_dir()
+            raise FileNotFoundError(
+                f"모델 {model_info.key}에 대한 실행 디렉터리를 결정할 수 없습니다. "
+                f"catalog path={resource}"
+            )
+        if not run_dir.is_dir():
+            raise FileNotFoundError(
+                f"모델 {model_info.key}의 실행 디렉터리가 유효하지 않습니다: {run_dir}"
+            )
 
         checkpoint_name_override = (
             extras.get("checkpoint_name") or extras.get("checkpointName")
@@ -572,7 +607,9 @@ class VitInferenceService:
                     resolved_meta = path
                     break
             if resolved_meta is None:
-                raise FileNotFoundError(f"meta.yaml을 찾을 수 없습니다: {meta_path}")
+                raise FileNotFoundError(
+                    f"meta.yaml을 찾을 수 없습니다: {meta_path}"
+                )
             meta_path = resolved_meta
 
         return run_dir, meta_path, checkpoint_path
