@@ -42,6 +42,14 @@ def _build_train_cfg(cfg: DictConfig) -> TrainCfg:
     step_debug_flag = trainer_cfg.get("step_debug_logging", False)
     raw_val_steps = trainer_cfg.get("val_steps_limit")
     val_steps_limit: Optional[int]
+    step_ratio_raw = trainer_cfg.get("step_ratio")
+    step_ratio: Optional[float] = None
+    try:
+        parsed_ratio = float(step_ratio_raw)
+        if parsed_ratio > 0.0:
+            step_ratio = min(parsed_ratio, 1.0)
+    except (TypeError, ValueError):
+        step_ratio = None
     try:
         parsed_val_steps = int(raw_val_steps)
         val_steps_limit = parsed_val_steps if parsed_val_steps > 0 else None
@@ -71,6 +79,7 @@ def _build_train_cfg(cfg: DictConfig) -> TrainCfg:
         full_epochs=trainer_cfg.get("full_epochs"),
         partial_steps=trainer_cfg.get("partial_steps"),
         full_steps=trainer_cfg.get("full_steps"),
+        step_ratio=step_ratio,
         service_val_pipeline=bool(trainer_cfg.get("service_val_pipeline", True)),
         val_steps_limit=val_steps_limit,
         step_debug_logging=bool(step_debug_flag),

@@ -3,6 +3,7 @@ partial_epochs: 35
 full_epochs: 5
 partial_steps: 10000
 full_steps: -1
+step_ratio: null
 service_val_pipeline: true
 val_steps_limit: null
 mixed_precision: fp16
