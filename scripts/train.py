@@ -12,11 +12,6 @@ import torch.distributed as dist
 from accelerate import Accelerator
 from accelerate.utils import DistributedType
 from omegaconf import DictConfig, OmegaConf
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from core.datasets import build_dataloaders
 from core.models.registry import get_model
 from core.trainer.engine import TrainCfg, Trainer
@@ -25,7 +20,6 @@ from core.utils.logger import get_logger, setup_experiment_loggers
 from core.utils.seed import set_seed
 
 logger = get_logger(__name__)
-
 
 def _to_dict(cfg: Any) -> Dict[str, Any]:
     if isinstance(cfg, DictConfig):
