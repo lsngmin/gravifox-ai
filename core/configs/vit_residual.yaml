@@ -1,5 +1,5 @@
 defaults:
-  - dataset: sns_standard_dataset
+  - dataset: base
   - augment: sns_standard
   - optimizer: adamw
   - scheduler: cosine
@@ -49,18 +49,6 @@ run:
   seed: 1337
   output_dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/${model.name}/${now:%Y%m%d_%H%M%S}
   name: vit_residual_multiscale
-
-dataset:
-  data_root: /home/smin/datasets/genimage
-  source: imagenet_ai_0508_adm
-  loader:
-    batch_size: 60
-    num_workers: 12
-    pin_memory: true
-    persistent_workers: true
-    drop_last: true
-    prefetch_factor: 6
-    precompute_patches: true
 
 augment:
   sns:

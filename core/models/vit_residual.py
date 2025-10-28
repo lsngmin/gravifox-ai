@@ -42,6 +42,7 @@ class ViTResidualFusionModel(nn.Module):
         self.fusion_head = FusionClassifierHead(
             FusionHeadConfig(dim_rgb=embed_dim, dim_residual=cfg.residual_embed_dim, num_classes=cfg.num_classes)
         )
+        self._freeze_feature_extractors()
         self._shape_logged = False
 
     def forward(self, image_tensor: torch.Tensor) -> torch.Tensor:
@@ -73,6 +74,12 @@ class ViTResidualFusionModel(nn.Module):
 
         logits = self.fusion_head(vit_embedding, residual_embedding)
         return logits
+
+    def _freeze_feature_extractors(self) -> None:
+        """미리 학습된 백본/잔차 브랜치를 고정해 분류 헤드만 학습하도록 한다."""
+
+        self.vit.requires_grad_(False)
+        self.residual_branch.requires_grad_(False)
 
 
 @register("vit_residual")
