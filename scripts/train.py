@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import logging, os, hydra, torch
-import torch.distributed as dist
+import logging
+import os
 
+import hydra
+import torch
 from pathlib import Path
 from typing import Any, Dict, Optional
 from accelerate import Accelerator
-from accelerate.utils import DistributedType
 from omegaconf import DictConfig, OmegaConf
 
 from core.datasets import build_dataloaders
@@ -71,48 +72,6 @@ def _build_train_config(c: DictConfig) -> TrainCfg:
         ckpt_mode=str(monitor_cfg["mode"]),
     )
 
-def _sync_processes(accelerator: Accelerator) -> None:
-    """NCCL 경고 없이 프로세스 간 동기화."""
-
-    if accelerator.num_processes <= 1:
-        return
-
-    def _dist_ready() -> bool:
-        try:
-            return dist.is_available() and dist.is_initialized()
-        except Exception:
-            return False
-
-    try:
-        if _dist_ready():
-            current_device = None
-            device_obj = getattr(accelerator, "device", None)
-            if isinstance(device_obj, torch.device) and device_obj.type == "cuda":
-                current_device = device_obj.index
-            if current_device is None and torch.cuda.is_available():
-                current_device = torch.cuda.current_device()
-            if current_device is not None:
-                try:
-                    dist.barrier(device_ids=[current_device])
-                    return
-                except TypeError:
-                    pass
-            dist.barrier()
-            return
-    except Exception as exc:  # pragma: no cover - 로그 정도만 남김
-        logger.debug("torch.distributed.barrier 호출 실패: %s", exc)
-
-    state = getattr(accelerator, "state", None)
-    distributed_type = getattr(state, "distributed_type", None)
-    if distributed_type in (None, DistributedType.NO) or not _dist_ready():
-        return
-
-    try:
-        accelerator.wait_for_everyone()
-    except Exception as exc:  # pragma: no cover - 호출 실패 시 무시
-        logger.debug("accelerator.wait_for_everyone 호출 실패: %s", exc)
-
-
 def r(c: DictConfig) -> Path:
     """Hydra DictConfig를 받아 단일 학습을 수행한다."""
     cfg = c
@@ -120,59 +79,41 @@ def r(c: DictConfig) -> Path:
     train_cfg = train_config
 
     accelerator = Accelerator()
-
+    # GPU 세팅 확인
     if torch.cuda.is_available() and (local_rank := os.environ.get("LOCAL_RANK")) is not None:
         torch.cuda.set_device(int(local_rank))
-
-    set_seed((cfg.run.seed or 0) + accelerator.process_index)
-    if cfg.run.seed is not None:
+    # 시드 동기화
+    set_seed((c.run.seed or 0) + accelerator.process_index)
+    if c.run.seed is not None:
         from accelerate.utils import set_seed as accel_set_seed
-        accel_set_seed(cfg.run.seed, device_specific=True)
+        accel_set_seed(c.run.seed, device_specific=True)
 
-
-    experiment_dir = Path(cfg.run.output_dir).expanduser().resolve()
+    # 실험 파일 생성 후 GPU 프로세스 동기화
+    experiment_dir = Path(c.run.output_dir).expanduser().resolve()
     if accelerator.is_main_process:
         experiment_dir.mkdir(parents=True, exist_ok=True)
-    _sync_processes(accelerator)
+    accelerator.wait_for_everyone()
 
-    logging_cfg = _to_dict(cfg.logging)
-    level_name = str(logging_cfg.get("level", "INFO"))
+
+    logging_cfg = cfg.logging
+    level_name = str(logging_cfg.level)
     log_level = getattr(logging, level_name.upper(), logging.INFO)
     if accelerator.is_main_process:
         logging.getLogger().setLevel(log_level)
         logger.setLevel(log_level)
 
-    handlers_cfg = _to_dict(logging_cfg.get("handlers", {}))
+    handlers_cfg = logging_cfg.handlers
+    console_enabled = bool(handlers_cfg.console)
 
-    console_enabled = True
-    if isinstance(handlers_cfg, dict) and "console" in handlers_cfg:
-        console_enabled = bool(handlers_cfg.get("console"))
-
-    file_cfg: Dict[str, Any] = {}
-    if isinstance(handlers_cfg, dict):
-        file_cfg = _to_dict(handlers_cfg.get("file", {})) or {}
-
-    base_dir = file_cfg.get("dir", "logs")
-    train_name = file_cfg.get("train", "train.log")
-    system_name = file_cfg.get("system", "system.log")
-
-    if Path(base_dir).is_absolute():
-        train_path = Path(base_dir) / train_name
-        system_path = Path(base_dir) / system_name
-    else:
-        base_path = experiment_dir / base_dir
-        train_path = base_path / train_name
-        system_path = base_path / system_name
-
-    jsonl_cfg: Dict[str, Any] = {}
-    jsonl_path: Optional[Path] = None
-    if isinstance(handlers_cfg, dict):
-        jsonl_cfg = _to_dict(handlers_cfg.get("jsonl", {})) or {}
-    if jsonl_cfg.get("enabled", True):
-        rel = jsonl_cfg.get("path", "logs/events.jsonl")
-        jsonl_path = Path(rel)
-        if not jsonl_path.is_absolute():
-            jsonl_path = experiment_dir / jsonl_path
+    file_cfg = handlers_cfg.file
+    file_enabled = bool(file_cfg.enabled)
+    log_path: Optional[str | Path]
+    log_path = None
+    json_format = True
+    if file_enabled:
+        log_path = Path(str(file_cfg.path))
+        format_value = str(getattr(file_cfg, "format", "json")).lower()
+        json_format = format_value != "text"
 
     world_size = accelerator.num_processes
     rank = accelerator.process_index
@@ -180,13 +121,12 @@ def r(c: DictConfig) -> Path:
         exp_dir=experiment_dir,
         level=log_level,
         console=console_enabled,
-        train_log=train_path,
-        system_log=system_path,
-        jsonl_path=jsonl_path,
+        log_path=log_path,
+        json_format=json_format,
     )
     if accelerator.is_main_process:
         setup_experiment_loggers(**setup_kwargs)
-    _sync_processes(accelerator)
+    accelerator.wait_for_everyone()
 
     dataset_cfg = cfg.dataset
     train_loader, val_loader, class_names, val_infer_transform, train_augment = build_dataloaders(
@@ -242,7 +182,7 @@ def r(c: DictConfig) -> Path:
 
     if accelerator.is_main_process:
         logger.info("학습 종료 - 산출물 경로: %s", experiment_dir)
-    _sync_processes(accelerator)
+    accelerator.wait_for_everyone()
     return experiment_dir
 
 

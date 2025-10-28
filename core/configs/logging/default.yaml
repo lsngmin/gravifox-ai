@@ -3,7 +3,5 @@ handlers:
   console: true
   file:
     enabled: true
-    dir: logs
-  jsonl:
-    enabled: true
-    path: logs/events.jsonl
+    path: logs/experiment.log
+    format: json

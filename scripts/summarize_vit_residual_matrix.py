@@ -3,7 +3,7 @@
 무엇을/왜:
     - 런처가 생성한 설정(`core/configs/experiments/vit_residual_matrix/vit_residual_E##.yaml`)
       목록과 실행된 실험 디렉터리(`experiments/residual_*`)를 "생성 순서=실행 순서"로 매핑.
-    - 각 run의 `logs/train.log`를 파싱해 best val_acc/max, best val_loss/min, 마지막 에폭 지표를 집계.
+    - 각 run의 `logs/experiment.log`(또는 구버전 train.log)를 파싱해 best val_acc/max, best val_loss/min, 마지막 에폭 지표를 집계.
     - 결과를 표로 출력하고 CSV로 저장(옵션).
 
 제한사항:
@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -120,8 +121,17 @@ def parse_train_log(log_path: Path) -> Optional[Dict]:
     re_accel = re.compile(r"Accelerate 초기화 .* per_proc_bs=(\d+), global_bs=(\d+)")
 
     with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            m = re_accel.search(line)
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+                message = str(record.get("message", ""))
+            except json.JSONDecodeError:
+                message = raw_line
+
+            m = re_accel.search(message)
             if m:
                 try:
                     per_proc_bs = int(m.group(1))
@@ -130,7 +140,7 @@ def parse_train_log(log_path: Path) -> Optional[Dict]:
                     pass
                 continue
 
-            m = re_epoch.search(line)
+            m = re_epoch.search(message)
             if not m:
                 continue
             ep = int(m.group(1))
@@ -195,8 +205,15 @@ def main() -> None:
     for i in range(n):
         hp = hp_list[i]
         run = run_paths[i]
-        log_path = run / "logs" / "train.log"
-        parsed = parse_train_log(log_path)
+        log_candidates = [
+            run / "logs" / "experiment.log",
+            run / "logs" / "train.log",
+        ]
+        parsed = None
+        for candidate in log_candidates:
+            parsed = parse_train_log(candidate)
+            if parsed is not None:
+                break
         row: Dict = {
             "experiment_id": hp.get("experiment_id") or f"E{(i+1):02d}",
             "run_dir": str(run),

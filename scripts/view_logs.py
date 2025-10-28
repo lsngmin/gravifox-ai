@@ -18,12 +18,19 @@ def _find_latest_experiment(model_name: str) -> Path:
     return sorted(candidates)[-1]
 
 
+def _resolve_log_path(experiment_dir: Path, *, system: bool) -> Path:
+    candidates = [experiment_dir / "logs" / "experiment.log"]
+    legacy_name = "system.log" if system else "train.log"
+    candidates.append(experiment_dir / "logs" / legacy_name)
+    for path in candidates:
+        if path.exists():
+            return path
+    raise FileNotFoundError(f"log file not found (checked: {', '.join(str(p) for p in candidates)})")
+
+
 def view_train_logs(model_name: str, *, system: bool = False, tail: int | None = None) -> str:
     latest = _find_latest_experiment(model_name)
-    log_name = "system.log" if system else "train.log"
-    log_path = latest / "logs" / log_name
-    if not log_path.exists():
-        raise FileNotFoundError(f"log file not found: {log_path}")
+    log_path = _resolve_log_path(latest, system=system)
     with open(log_path, "r", encoding="utf-8") as fp:
         if tail is None or tail <= 0:
             return fp.read()
