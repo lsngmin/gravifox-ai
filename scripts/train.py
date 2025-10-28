@@ -126,7 +126,10 @@ def r(c: DictConfig) -> Path:
 
     set_seed((cfg.run.seed or 0) + accelerator.process_index)
     if cfg.run.seed is not None:
-        accelerator.seed(cfg.run.seed)
+        from accelerate.utils import set_seed as accel_set_seed
+        accel_set_seed(cfg.run.seed, device_specific=True)
+
+        # accelerator.seed(cfg.run.seed)
 
     # preassigned_device = False
     # if torch.cuda.is_available():
