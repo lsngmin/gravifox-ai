@@ -90,44 +90,62 @@ def _log_epoch_event(logger: logging.Logger, epoch: int, split: str, metrics: Di
 
 @dataclass
 class TrainCfg:
-    """학습 루프 전역 설정."""
+    epochs: int
+    lr: float
+    weight_decay: float
+    optimizer: str
+    scheduler: str
+    warmup_epochs: Optional[int]
+    sched_factor: Optional[float]
+    sched_patience: Optional[int]
+    sched_min_lr: Optional[float]
+    sched_monitor: Optional[str]
+    sched_mode: Optional[str]
+    mixed_precision: Optional[str]
+    grad_accum_steps: int
+    log_interval: int
+    criterion: str
+    label_smoothing: float
+    max_grad_norm: float
+    patch_chunk_size: int
+    partial_epochs: Optional[int]
+    full_epochs: Optional[int]
+    partial_steps: Optional[int]
+    full_steps: Optional[int]
+    step_ratio: Optional[float]
+    service_val_pipeline: bool
+    val_steps_limit: Optional[int]
+    seed: Optional[int]
+    early_stop: bool
+    early_patience: int
+    early_monitor: str
+    early_mode: str
+    ckpt_monitor: str
+    ckpt_mode: str
+    step_debug_logging: bool
 
-    epochs: int = 10
-    lr: float = 3e-4
-    weight_decay: float = 0.05
-    optimizer: str = "adamw"
-    scheduler: str = "cosine"  # "cosine" | "reduce_on_plateau"
-    warmup_epochs: int = 0
-    # ReduceLROnPlateau options
-    sched_factor: float = 0.5
-    sched_patience: int = 3
-    sched_min_lr: float = 1e-6
-    sched_monitor: str = "val_loss"  # val_loss | val_acc
-    sched_mode: str = "min"  # min|max
-    mixed_precision: Optional[str] = None
-    grad_accum_steps: int = 1
-    log_interval: int = 50
-    criterion: str = "ce"
-    label_smoothing: float = 0.0
-    max_grad_norm: float = 1.0
-    patch_chunk_size: int = 8
-    partial_epochs: Optional[int] = None
-    full_epochs: Optional[int] = None
-    partial_steps: Optional[int] = None
-    full_steps: Optional[int] = None
-    step_ratio: Optional[float] = None
-    service_val_pipeline: bool = True
-    val_steps_limit: Optional[int] = None
-    seed: Optional[int] = None
-    # Early stopping
-    early_stop: bool = False
-    early_patience: int = 8
-    early_monitor: str = "val_loss"
-    early_mode: str = "min"
-    # Checkpoint selection
-    ckpt_monitor: str = "val_loss"
-    ckpt_mode: str = "min"
-    step_debug_logging: bool = False
+    def __post_init__(self) -> None:
+        required = {
+            "epochs": self.epochs,
+            "lr": self.lr,
+            "weight_decay": self.weight_decay,
+            "optimizer": self.optimizer,
+            "scheduler": self.scheduler,
+            "grad_accum_steps": self.grad_accum_steps,
+            "log_interval": self.log_interval,
+            "criterion": self.criterion,
+            "max_grad_norm": self.max_grad_norm,
+            "patch_chunk_size": self.patch_chunk_size,
+            "service_val_pipeline": self.service_val_pipeline,
+            "early_patience": self.early_patience,
+            "early_monitor": self.early_monitor,
+            "early_mode": self.early_mode,
+            "ckpt_monitor": self.ckpt_monitor,
+            "ckpt_mode": self.ckpt_mode,
+        }
+        missing = [key for key, value in required.items() if value is None]
+        if missing:
+            raise ValueError(f"Missing required trainer fields: {', '.join(missing)}")
 
 
 class Trainer:

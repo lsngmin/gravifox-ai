@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import logging
-import os
-import sys
+import logging, os, hydra, torch
+import torch.distributed as dist
+
 from pathlib import Path
 from typing import Any, Dict, Optional
-
-import hydra
-import torch
-import torch.distributed as dist
 from accelerate import Accelerator
 from accelerate.utils import DistributedType
 from omegaconf import DictConfig, OmegaConf
+
 from core.datasets import build_dataloaders
 from core.models.registry import get_model
 from core.trainer.engine import TrainCfg, Trainer
@@ -26,64 +23,49 @@ def _to_dict(cfg: Any) -> Dict[str, Any]:
         return OmegaConf.to_container(cfg, resolve=True)  # type: ignore[return-value]
     return cfg
 
+def _build_train_config(c: DictConfig) -> TrainCfg:
+    trainer_cfg = OmegaConf.to_container(c.trainer, resolve=True)
+    optimizer_cfg = OmegaConf.to_container(c.optimizer, resolve=True)
+    scheduler_cfg = OmegaConf.to_container(c.scheduler, resolve=True)
 
-def _build_train_cfg(cfg: DictConfig) -> TrainCfg:
-    optimizer_cfg = cfg.optimizer
-    scheduler_cfg = cfg.scheduler
-    trainer_cfg = cfg.trainer
-    early_cfg = trainer_cfg.get("early_stopping", {})
-    monitor_cfg = trainer_cfg.get("monitor", {})
-    step_debug_flag = trainer_cfg.get("step_debug_logging", False)
-    raw_val_steps = trainer_cfg.get("val_steps_limit")
+    early_cfg = trainer_cfg["early_stopping"]
+    monitor_cfg = trainer_cfg["monitor"]
     val_steps_limit: Optional[int]
-    step_ratio_raw = trainer_cfg.get("step_ratio")
     step_ratio: Optional[float] = None
-    try:
-        parsed_ratio = float(step_ratio_raw)
-        if parsed_ratio > 0.0:
-            step_ratio = min(parsed_ratio, 1.0)
-    except (TypeError, ValueError):
-        step_ratio = None
-    try:
-        parsed_val_steps = int(raw_val_steps)
-        val_steps_limit = parsed_val_steps if parsed_val_steps > 0 else None
-    except (TypeError, ValueError):
-        val_steps_limit = None
 
     return TrainCfg(
-        epochs=trainer_cfg.get("epochs", 10),
-        lr=optimizer_cfg.get("lr", 3.0e-4),
-        weight_decay=optimizer_cfg.get("weight_decay", 0.05),
-        optimizer=optimizer_cfg.get("name", "adamw"),
-        scheduler=scheduler_cfg.get("name", "cosine"),
-        warmup_epochs=scheduler_cfg.get("warmup_epochs", 0),
-        sched_factor=scheduler_cfg.get("factor", 0.5),
-        sched_patience=scheduler_cfg.get("patience", 3),
-        sched_min_lr=scheduler_cfg.get("min_lr", 1.0e-6),
-        sched_monitor=scheduler_cfg.get("monitor", "val_loss"),
-        sched_mode=scheduler_cfg.get("mode", "min"),
-        mixed_precision=trainer_cfg.get("mixed_precision"),
-        grad_accum_steps=trainer_cfg.get("grad_accum_steps", 1),
-        log_interval=trainer_cfg.get("log_interval", 50),
-        criterion=trainer_cfg.get("criterion", "ce"),
-        label_smoothing=float(trainer_cfg.get("label_smoothing", 0.0) or 0.0),
-        max_grad_norm=float(trainer_cfg.get("max_grad_norm", 1.0) or 0.0),
-        patch_chunk_size=int(trainer_cfg.get("patch_chunk_size", 8) or 8),
+        epochs=int(trainer_cfg["epochs"]),
+        lr=float(optimizer_cfg["lr"]),
+        weight_decay=float(optimizer_cfg["weight_decay"]),
+        optimizer=str(optimizer_cfg["name"]),
+        scheduler=str(scheduler_cfg["name"]),
+        warmup_epochs=scheduler_cfg.get("warmup_epochs"),
+        sched_factor=scheduler_cfg.get("factor"),
+        sched_patience=scheduler_cfg.get("patience"),
+        sched_min_lr=scheduler_cfg.get("min_lr"),
+        sched_monitor=scheduler_cfg.get("monitor"),
+        sched_mode=scheduler_cfg.get("mode"),
+        mixed_precision=trainer_cfg["mixed_precision"],
+        grad_accum_steps=int(trainer_cfg["grad_accum_steps"]),
+        log_interval=int(trainer_cfg["log_interval"]),
+        criterion=str(trainer_cfg["criterion"]),
+        label_smoothing=float(trainer_cfg["label_smoothing"]),
+        max_grad_norm=float(trainer_cfg["max_grad_norm"]),
+        patch_chunk_size=int(trainer_cfg["patch_chunk_size"]),
         partial_epochs=trainer_cfg.get("partial_epochs"),
         full_epochs=trainer_cfg.get("full_epochs"),
         partial_steps=trainer_cfg.get("partial_steps"),
         full_steps=trainer_cfg.get("full_steps"),
         step_ratio=step_ratio,
-        service_val_pipeline=bool(trainer_cfg.get("service_val_pipeline", True)),
-        val_steps_limit=val_steps_limit,
-        step_debug_logging=bool(step_debug_flag),
-        seed=getattr(cfg.run, "seed", None),
-        early_stop=early_cfg.get("enabled", False),
-        early_patience=early_cfg.get("patience", 8),
-        early_monitor=early_cfg.get("monitor", "val_loss"),
-        early_mode=early_cfg.get("mode", "min"),
-        ckpt_monitor=monitor_cfg.get("key", "val_loss"),
-        ckpt_mode=monitor_cfg.get("mode", "min"),
+        service_val_pipeline=bool(trainer_cfg["service_val_pipeline"]),
+        step_debug_logging=bool(trainer_cfg["step_debug_logging"]),
+        seed=getattr(c.run, "seed", None),
+        early_stop=bool(early_cfg["enabled"]),
+        early_patience=int(early_cfg["patience"]),
+        early_monitor=str(early_cfg["monitor"]),
+        early_mode=str(early_cfg["mode"]),
+        ckpt_monitor=str(monitor_cfg["key"]),
+        ckpt_mode=str(monitor_cfg["mode"]),
     )
 
 
@@ -129,10 +111,11 @@ def _sync_processes(accelerator: Accelerator) -> None:
         logger.debug("accelerator.wait_for_everyone 호출 실패: %s", exc)
 
 
-def run_training(cfg: DictConfig) -> Path:
+def r(c: DictConfig) -> Path:
     """Hydra DictConfig를 받아 단일 학습을 수행한다."""
-
-    train_cfg = _build_train_cfg(cfg)
+    cfg = c
+    train_config = _build_train_config(c)
+    train_cfg = train_config
 
     preassigned_device = False
     if torch.cuda.is_available():
@@ -278,9 +261,8 @@ def run_training(cfg: DictConfig) -> Path:
 
 
 @hydra.main(version_base="1.3", config_path="../core/configs", config_name="defaults")
-def main(cfg: DictConfig) -> None:
-    run_training(cfg)
-
+def main(c: DictConfig) -> None:
+    r(c)
 
 if __name__ == "__main__":
     main()
