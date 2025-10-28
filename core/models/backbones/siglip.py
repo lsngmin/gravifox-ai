@@ -165,8 +165,10 @@ class SiglipBackbone(nn.Module):
         else:
             pixel_values = image_tensor
 
-        use_autocast = self.cfg.autocast_enabled and pixel_values.device.type == "cuda"
-        with torch.cuda.amp.autocast(dtype=self._autocast_dtype, enabled=use_autocast):
+        device_type = pixel_values.device.type
+        use_autocast = self.cfg.autocast_enabled and device_type == "cuda"
+        autocast_scope = torch.amp.autocast if device_type != "cpu" else torch.amp.autocast
+        with autocast_scope(device_type, dtype=self._autocast_dtype, enabled=use_autocast):
             outputs = self.vision(
                 pixel_values=pixel_values,
                 output_hidden_states=self.cfg.return_hidden_states,
