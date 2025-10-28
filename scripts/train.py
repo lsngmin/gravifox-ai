@@ -78,10 +78,11 @@ def r(c: DictConfig) -> Path:
     train_config = _build_train_config(c)
     train_cfg = train_config
 
-    accelerator = Accelerator()
     # GPU 세팅 확인
     if torch.cuda.is_available() and (local_rank := os.environ.get("LOCAL_RANK")) is not None:
         torch.cuda.set_device(int(local_rank))
+    accelerator = Accelerator()
+
     # 시드 동기화
     set_seed((c.run.seed or 0) + accelerator.process_index)
     if c.run.seed is not None:
