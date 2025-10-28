@@ -1043,6 +1043,25 @@ class Trainer:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    def validate_only(self) -> Dict[str, float]:
+        """훈련 없이 검증 파이프라인만 실행한다."""
+
+        metrics = self._validate()
+        if self.accel.is_main_process:
+            self.train_logger.info(
+                (
+                    "검증 전용 실행 - val_loss=%.4f val_acc=%.4f "
+                    "val_f1=%.4f val_auc=%.4f val_ece=%.4f val_tpr@1%%=%.4f"
+                ),
+                metrics.get("val_loss", metrics.get("loss", 0.0)),
+                metrics.get("val_acc", metrics.get("acc", 0.0)),
+                metrics.get("f1", 0.0),
+                metrics.get("auc", 0.0),
+                metrics.get("ece", 0.0),
+                metrics.get("tpr@fpr=1%", 0.0),
+            )
+        return metrics
+
     def fit(self) -> Dict[str, float]:
         self.out_dir.mkdir(parents=True, exist_ok=True)
 

@@ -26,7 +26,7 @@ def _to_dict(cfg: Any) -> Dict[str, Any]:
 
 def _build_train_config(c: DictConfig) -> TrainCfg:
     """
-    여기서 파라미터가 변경되는 로직 없습니다. 모든 파라미터 yaml에 의해 정의됩니다.
+    여기 파라미터가 변경되는 로직 없습니다. 모든 파라미터 yaml에 의해 정의됩니다.
     풀백 로직 존재하지 않습니다. / 에러 발생 시 yaml에 정의된 부분 오타나 상속 관계 파악하십시오.
     :param c: hydra Config (yaml)을 정리해 최종적인 딕셔너리를 받아옵니다.
     :return: engine.py에 정의된 TrainCfg DataClass에 값을 채워 반환합니다.
@@ -94,9 +94,8 @@ def r(c: DictConfig) -> Path:
     if accelerator.is_main_process:
         experiment_dir.mkdir(parents=True, exist_ok=True)
     accelerator.wait_for_everyone()
-
-
-    logging_cfg = cfg.logging
+    # 로깅 설정
+    logging_cfg = c.logging
     level_name = str(logging_cfg.level)
     log_level = getattr(logging, level_name.upper(), logging.INFO)
     if accelerator.is_main_process:
@@ -129,7 +128,7 @@ def r(c: DictConfig) -> Path:
         setup_experiment_loggers(**setup_kwargs)
     accelerator.wait_for_everyone()
 
-    dataset_cfg = cfg.dataset
+    dataset_cfg = c.dataset
     train_loader, val_loader, class_names, val_infer_transform, train_augment = build_dataloaders(
         dataset_cfg,
         world_size=world_size,
@@ -166,7 +165,11 @@ def r(c: DictConfig) -> Path:
         inference_transform=val_infer_transform,
         train_augment=train_augment,
     )
-    final_val_metrics = trainer.fit()
+    eval_only = bool(getattr(cfg.run, "eval_only", False) or getattr(cfg.run, "validate_only", False))
+    if eval_only:
+        final_val_metrics = trainer.validate_only()
+    else:
+        final_val_metrics = trainer.fit()
 
     dataset_info = _to_dict(cfg.dataset)
     optimizer_info = _to_dict(cfg.optimizer)
