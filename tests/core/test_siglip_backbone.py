@@ -49,7 +49,9 @@ def test_siglip_backbone_logits_forward(device: torch.device, freeze_encoder: bo
     assert logits.shape == (2, cfg.num_classes)
     assert "pixel_values" in captured
 
-    expected = torch.full((2, 3, 384, 384), (1.0 - 0.5) / 0.25)
+    mean = model._image_mean.detach().cpu() if model._image_mean is not None else torch.zeros(1, 3, 1, 1)
+    std = model._image_std.detach().cpu() if model._image_std is not None else torch.ones(1, 3, 1, 1)
+    expected = (dummy.detach().cpu() - mean) / std
     torch.testing.assert_close(captured["pixel_values"], expected, atol=1e-5, rtol=1e-5)
 
     if freeze_encoder:
