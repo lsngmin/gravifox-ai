@@ -24,6 +24,12 @@ def _to_dict(cfg: Any) -> Dict[str, Any]:
     return cfg
 
 def _build_train_config(c: DictConfig) -> TrainCfg:
+    """
+    여기서 파라미터가 변경되는 로직 없습니다. 모든 파라미터 yaml에 의해 정의됩니다.
+    풀백 로직 존재하지 않습니다. / 에러 발생 시 yaml에 정의된 부분 오타나 상속 관계 파악하십시오.
+    :param c: hydra Config (yaml)을 정리해 최종적인 딕셔너리를 받아옵니다.
+    :return: engine.py에 정의된 TrainCfg DataClass에 값을 채워 반환합니다.
+    """
     trainer_cfg = OmegaConf.to_container(c.trainer, resolve=True)
     optimizer_cfg = OmegaConf.to_container(c.optimizer, resolve=True)
     scheduler_cfg = OmegaConf.to_container(c.scheduler, resolve=True)
@@ -64,7 +70,6 @@ def _build_train_config(c: DictConfig) -> TrainCfg:
         ckpt_monitor=str(monitor_cfg["key"]),
         ckpt_mode=str(monitor_cfg["mode"]),
     )
-
 
 def _sync_processes(accelerator: Accelerator) -> None:
     """NCCL 경고 없이 프로세스 간 동기화."""
