@@ -129,34 +129,6 @@ def r(c: DictConfig) -> Path:
         from accelerate.utils import set_seed as accel_set_seed
         accel_set_seed(cfg.run.seed, device_specific=True)
 
-        # accelerator.seed(cfg.run.seed)
-
-    # preassigned_device = False
-    # if torch.cuda.is_available():
-    #     local_rank_env = os.environ.get("LOCAL_RANK")
-    #     if local_rank_env is not None:
-    #         try:
-    #             torch.cuda.set_device(int(local_rank_env))
-    #             preassigned_device = True
-    #         except Exception as exc:
-    #             logger.debug("LOCAL_RANK 기반 torch.cuda.set_device 실패: %s", exc)
-    #
-    # accelerator = Accelerator()
-    # if torch.cuda.is_available() and not preassigned_device:
-    #     try:
-    #         device = getattr(accelerator, "device", None)
-    #         if isinstance(device, torch.device) and device.type == "cuda":
-    #             torch.cuda.set_device(device)
-    #         else:
-    #             torch.cuda.set_device(accelerator.local_process_index)
-    #     except Exception as exc:
-    #         logger.debug("torch.cuda.set_device 실패: %s", exc)
-    # set_seed((cfg.run.seed or 0) + accelerator.process_index)
-    # if cfg.run.seed is not None:
-    #     try:
-    #         accelerator.seed(cfg.run.seed)
-    #     except Exception:
-    #         pass
 
     experiment_dir = Path(cfg.run.output_dir).expanduser().resolve()
     if accelerator.is_main_process:
