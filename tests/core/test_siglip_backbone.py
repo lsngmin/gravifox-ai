@@ -86,6 +86,7 @@ def test_siglip_backbone_logits_forward(monkeypatch, freeze_encoder):
     assert model.vision.gradient_checkpointing_enabled is True
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="SigLIP autocast requires CUDA.")
 def test_siglip_backbone_feature_output(monkeypatch):
     captured, DummyVisionModel = _install_siglip_stubs(monkeypatch, hidden_size=48, pooler_output=False)
 
@@ -98,7 +99,7 @@ def test_siglip_backbone_feature_output(monkeypatch):
     model = SiglipBackbone(cfg)
     assert model.classifier is None
 
-    dummy = torch.zeros(1, 3, 384, 384)
+    dummy = torch.zeros(1, 3, 384, 384, device="cuda")
     output = model(dummy)
 
     assert isinstance(output, SiglipBackbone.ForwardOutput)
@@ -108,4 +109,6 @@ def test_siglip_backbone_feature_output(monkeypatch):
     assert len(output.hidden_states) == 1
     assert output.hidden_states[0].shape == (1, 2, 48)
 
-    assert captured["pixel_values"].shape == dummy.shape
+    captured_tensor = captured["pixel_values"]
+    assert captured_tensor.device.type == "cuda"
+    assert captured_tensor.shape == dummy.shape

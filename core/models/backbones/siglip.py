@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+from contextlib import nullcontext
 
 from core.utils.logger import get_logger
 from ..registry import register
@@ -166,9 +167,13 @@ class SiglipBackbone(nn.Module):
             pixel_values = image_tensor
 
         device_type = pixel_values.device.type
-        use_autocast = self.cfg.autocast_enabled and device_type == "cuda"
-        autocast_scope = torch.amp.autocast if device_type != "cpu" else torch.amp.autocast
-        with autocast_scope(device_type, dtype=self._autocast_dtype, enabled=use_autocast):
+        if self.cfg.autocast_enabled:
+            if device_type != "cuda":
+                raise RuntimeError("SigLIP autocast requires CUDA device.")
+            autocast_context = torch.amp.autocast("cuda", dtype=self._autocast_dtype)
+        else:
+            autocast_context = nullcontext()
+        with autocast_context:
             outputs = self.vision(
                 pixel_values=pixel_values,
                 output_hidden_states=self.cfg.return_hidden_states,
