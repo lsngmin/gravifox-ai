@@ -39,7 +39,6 @@ trainer:
   full_epochs: 0
   partial_steps: -1
   full_steps: -1
-  step_ratio: 0.65
   early_stopping:
     enabled: true
     patience: 5

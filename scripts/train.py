@@ -30,8 +30,6 @@ def _build_train_config(c: DictConfig) -> TrainCfg:
 
     early_cfg = trainer_cfg["early_stopping"]
     monitor_cfg = trainer_cfg["monitor"]
-    val_steps_limit: Optional[int]
-    step_ratio: Optional[float] = None
 
     return TrainCfg(
         epochs=int(trainer_cfg["epochs"]),
@@ -56,7 +54,6 @@ def _build_train_config(c: DictConfig) -> TrainCfg:
         full_epochs=trainer_cfg.get("full_epochs"),
         partial_steps=trainer_cfg.get("partial_steps"),
         full_steps=trainer_cfg.get("full_steps"),
-        step_ratio=step_ratio,
         service_val_pipeline=bool(trainer_cfg["service_val_pipeline"]),
         step_debug_logging=bool(trainer_cfg["step_debug_logging"]),
         seed=getattr(c.run, "seed", None),

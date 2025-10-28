@@ -112,9 +112,7 @@ class TrainCfg:
     full_epochs: Optional[int]
     partial_steps: Optional[int]
     full_steps: Optional[int]
-    step_ratio: Optional[float]
     service_val_pipeline: bool
-    val_steps_limit: Optional[int]
     seed: Optional[int]
     early_stop: bool
     early_patience: int
@@ -758,15 +756,8 @@ class Trainer:
         logits_collector = []
         targets_collector = []
         eps = 1e-8
-        steps_limit = 0
-        if self.cfg.val_steps_limit is not None:
-            try:
-                steps_limit = max(0, int(self.cfg.val_steps_limit))
-            except (TypeError, ValueError):
-                steps_limit = 0
         env_val_limit = _get_env_limit("TVB_VAL_MAX_STEPS")
-        if env_val_limit is not None:
-            steps_limit = env_val_limit
+        steps_limit = env_val_limit or 0
         try:
             total_batches = len(self.val_loader)
         except TypeError:
@@ -775,7 +766,7 @@ class Trainer:
             total_steps = min(steps_limit, total_batches)
         else:
             total_steps = total_batches
-        if steps_limit > 0 and self.system_logger is not None and self.accel.is_main_process:
+        if env_val_limit is not None and self.system_logger is not None and self.accel.is_main_process:
             self.system_logger.info(
                 "검증 배치를 최대 %d회로 제한합니다 (전체=%d)",
                 total_steps,
@@ -1105,33 +1096,6 @@ class Trainer:
                 steps_limit = max_steps_available
             else:
                 steps_limit = max(1, min(int(steps_target), max_steps_available))
-
-            ratio_limit = None
-            ratio_value = None
-            if self.cfg.step_ratio is not None and max_steps_available > 0:
-                try:
-                    ratio_value = float(self.cfg.step_ratio)
-                except (TypeError, ValueError):
-                    ratio_value = None
-                if ratio_value is not None and ratio_value > 0.0:
-                    clamped_ratio = min(ratio_value, 1.0)
-                    tentative = int(math.ceil(clamped_ratio * max_steps_available))
-                    ratio_limit = max(1, min(tentative, max_steps_available))
-            if ratio_limit is not None:
-                if steps_limit <= 0 or steps_limit > ratio_limit:
-                    steps_limit = ratio_limit
-                if (
-                    self.system_logger is not None
-                    and self.accel.is_main_process
-                    and epoch == 1
-                    and ratio_value is not None
-                ):
-                    self.system_logger.info(
-                        "학습 배치 중 %.1f%% 비율(%d/%d)을 사용하도록 제한합니다.",
-                        min(ratio_value, 1.0) * 100.0,
-                        steps_limit,
-                        max_steps_available,
-                    )
 
             env_train_limit = _get_env_limit("TVB_TRAIN_MAX_STEPS")
             if env_train_limit is not None:
