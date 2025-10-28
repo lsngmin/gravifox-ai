@@ -452,20 +452,22 @@ class Trainer:
         """멀티패치 텐서를 chunk 단위로 모델에 통과시킨다."""
 
         chunk_size = max(1, int(self.patch_chunk_size))
-        patches = patches.to(self.accel.device, non_blocking=True)
         if patches.size(0) <= chunk_size:
+            batch = patches.to(self.accel.device, non_blocking=True)
             with self.accel.autocast():
-                return self.model(patches)
+                return self.model(batch)
 
         logits_list: List[torch.Tensor] = []
         for chunk in patches.split(chunk_size):
             if chunk.numel() == 0:
                 continue
+            batch = chunk.to(self.accel.device, non_blocking=True)
             with self.accel.autocast():
-                logits_list.append(self.model(chunk))
+                logits_list.append(self.model(batch))
         if not logits_list:
+            batch = patches.to(self.accel.device, non_blocking=True)
             with self.accel.autocast():
-                return self.model(patches)
+                return self.model(batch)
         return torch.cat(logits_list, dim=0)
 
     # ------------------------------------------------------------------
