@@ -10,7 +10,15 @@ sources:
   - imagenet_ai_0508_adm
   - imagenet_glide
   - imagenet_midjourney
-source_weights: {}
+source_weights:
+  imagenet_ai_0419_biggan: 1
+  imagenet_ai_0419_sdv4: 1
+  imagenet_ai_0419_vqdm: 1
+  imagenet_ai_0424_sdv5: 1
+  imagenet_ai_0424_wukong: 1
+  imagenet_ai_0508_adm: 1
+  imagenet_glide: 1
+  imagenet_midjourney: 1
 
 train:
   root: ${dataset.data_root}/${dataset.source}/train
