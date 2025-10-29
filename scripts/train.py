@@ -143,6 +143,7 @@ def r(c: DictConfig) -> Path:
         return_raw_val_images=False,
         return_raw_train_images=True,
         build_val=False,
+        shuffle_train=True,
         **build_kwargs_common,
     )
     if train_loader is None:
@@ -154,6 +155,7 @@ def r(c: DictConfig) -> Path:
             return_raw_val_images=False,
             return_raw_train_images=True,
             build_val=False,
+            shuffle_train=True,
             **build_kwargs_common,
         )
         if loader is None:
@@ -167,6 +169,7 @@ def r(c: DictConfig) -> Path:
             return_raw_train_images=False,
             build_train=False,
             build_val=True,
+            shuffle_train=False,
             **build_kwargs_common,
         )
         return loader

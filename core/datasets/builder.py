@@ -454,14 +454,15 @@ def build_dataloaders(
         if num_sources == 0:
             raise RuntimeError("유효한 학습 데이터 소스를 찾을 수 없습니다.")
 
-        if num_sources > 1:
-            weight_config = dataset_cfg.source_weights or {}
+        weight_config = dataset_cfg.source_weights or {}
+        if num_sources > 1 and weight_config:
             missing_weights = [src for src in included_sources if src not in weight_config]
             if missing_weights:
                 raise ValueError(f"source_weights 설정에 누락된 소스가 있습니다: {missing_weights}")
             provided_weights = [float(weight_config[src]) for src in included_sources]
+        elif num_sources > 1:
+            provided_weights = [1.0 for _ in included_sources]
         else:
-            weight_config = dataset_cfg.source_weights or {}
             provided_weights = (
                 [float(weight_config[included_sources[0]])] if included_sources and included_sources[0] in weight_config else []
             )
