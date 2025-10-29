@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Optional, Sequence, Tuple, List, Any
+import gc
 
 import datetime
 import json
@@ -21,12 +22,6 @@ from tqdm.auto import tqdm
 
 from core.utils.logger import get_logger, get_train_logger
 from core.utils.seed import set_seed as set_global_seed
-from core.models.multipatch import (
-    aggregate_scores,
-    compute_patch_weights,
-    estimate_priority_regions,
-    generate_patches,
-)
 from .experiment_manager import ExperimentManager, MonitorConfig
 from .metrics import classification_metrics, top1_accuracy
 from .optim import create_optimizer
@@ -112,7 +107,6 @@ class TrainCfg:
     full_epochs: Optional[int]
     partial_steps: Optional[int]
     full_steps: Optional[int]
-    service_val_pipeline: bool
     seed: Optional[int]
     early_stop: bool
     early_patience: int
@@ -134,7 +128,6 @@ class TrainCfg:
             "criterion": self.criterion,
             "max_grad_norm": self.max_grad_norm,
             "patch_chunk_size": self.patch_chunk_size,
-            "service_val_pipeline": self.service_val_pipeline,
             "early_patience": self.early_patience,
             "early_monitor": self.early_monitor,
             "early_mode": self.early_mode,
@@ -168,11 +161,54 @@ class Trainer:
             )
         )
 
+    def _prepare_train_loader(self, loader: DataLoader) -> DataLoader:
+        prepared = self.accel.prepare_data_loader(loader)
+        if self.accel.is_main_process:
+            self.system_logger.info(
+                "DataLoader 설정(train/after prepare) - %s",
+                self._loader_summary(prepared),
+            )
+        return prepared
+
+    def _prepare_val_loader(self, loader: DataLoader) -> DataLoader:
+        prepared = self.accel.prepare_data_loader(loader)
+        if self.accel.is_main_process:
+            self.system_logger.info(
+                "DataLoader 설정(val/after prepare) - %s",
+                self._loader_summary(prepared),
+            )
+        return prepared
+
+    def _release_train_loader(self) -> None:
+        if self.train_loader is None:
+            return
+        try:
+            self.train_loader = None
+        finally:
+            gc.collect()
+
+    def _release_val_loader(self, loader: Optional[DataLoader]) -> None:
+        if loader is None:
+            return
+        try:
+            pass
+        finally:
+            gc.collect()
+
+    def _build_val_loader(self) -> Optional[DataLoader]:
+        if self.val_loader_factory is None:
+            return None
+        loader = self.val_loader_factory()
+        if loader is None:
+            return None
+        return self._prepare_val_loader(loader)
+
     def __init__(
         self,
         model: nn.Module,
         train_loader: DataLoader,
-        val_loader: Optional[DataLoader],
+        train_loader_factory: Callable[[], DataLoader],
+        val_loader_factory: Optional[Callable[[], Optional[DataLoader]]],
         out_dir: str,
         cfg: TrainCfg,
         experiment: Optional[ExperimentManager] = None,
@@ -182,8 +218,9 @@ class Trainer:
         train_augment: Optional[Callable[[Image.Image], Image.Image]] = None,
     ) -> None:
         self.model = model
+        self.train_loader_factory = train_loader_factory
+        self.val_loader_factory = val_loader_factory
         self.train_loader = train_loader
-        self.val_loader = val_loader
         self.cfg = cfg
         self.inference_cfg = inference_cfg or {}
         self.inference_transform = inference_transform
@@ -210,25 +247,23 @@ class Trainer:
 
         global _STEP_DEBUG_ENABLED
 
-        self._init_inference_settings()
         _STEP_DEBUG_ENABLED = bool(cfg.step_debug_logging) or _STEP_DEBUG_ENV
         self.patch_chunk_size = max(1, int(cfg.patch_chunk_size or 8))
+
+        if self.inference_transform is None:
+            raise ValueError("Trainer requires inference_transform for training pipeline.")
 
         monitor = MonitorConfig(key=cfg.ckpt_monitor, mode=cfg.ckpt_mode)
         self.experiment = experiment or ExperimentManager(Path(out_dir), monitor=monitor)
         self.out_dir = Path(self.experiment.root)
 
-        if not self.cfg.service_val_pipeline and self.accel.is_main_process:
-            self.system_logger.info("검증 시 서비스 추론 파이프라인을 비활성화합니다.")
+        if self.accel.is_main_process:
+            self.system_logger.info("검증 모드: standard (서비스 파이프라인 비활성화)")
 
         if self.accel.is_main_process:
             self.system_logger.info(
                 "DataLoader 설정(train/before prepare) - %s",
                 self._loader_summary(train_loader),
-            )
-            self.system_logger.info(
-                "DataLoader 설정(val/before prepare) - %s",
-                self._loader_summary(val_loader),
             )
 
         try:
@@ -258,12 +293,16 @@ class Trainer:
         self._scheduler_needs_metric = False
         self.scheduler = self._build_scheduler()
 
-        if self.scheduler is not None:
-            prepare_args = (self.model, self.optimizer, self.train_loader, self.val_loader, self.scheduler)
-            (self.model, self.optimizer, self.train_loader, self.val_loader, self.scheduler) = self.accel.prepare(*prepare_args)
-        else:
-            prepare_args = (self.model, self.optimizer, self.train_loader, self.val_loader)
-            (self.model, self.optimizer, self.train_loader, self.val_loader) = self.accel.prepare(*prepare_args)
+        prepare_items: List[Any] = [self.model, self.optimizer]
+        has_scheduler = self.scheduler is not None
+        if has_scheduler:
+            prepare_items.append(self.scheduler)
+        prepared = self.accel.prepare(*prepare_items)
+        self.model = prepared[0]
+        self.optimizer = prepared[1]
+        if has_scheduler:
+            self.scheduler = prepared[2]
+        self.train_loader = self._prepare_train_loader(train_loader)
 
         wrapper_chain: List[str] = []
         cursor = self.model
@@ -324,129 +363,7 @@ class Trainer:
                 "DataLoader 설정(train/after prepare) - %s",
                 self._loader_summary(self.train_loader),
             )
-            self.system_logger.info(
-                "DataLoader 설정(val/after prepare) - %s",
-                self._loader_summary(self.val_loader),
-            )
 
-    def _init_inference_settings(self) -> None:
-        cfg = self.inference_cfg or {}
-        raw_scales = cfg.get("multiscale") or cfg.get("scales") or (224,)
-        if isinstance(raw_scales, (int, float)):
-            scales = (int(raw_scales),)
-        elif isinstance(raw_scales, (list, tuple)):
-            scales = tuple(int(float(s)) for s in raw_scales if s is not None)
-            if not scales:
-                scales = (224,)
-        else:
-            scales = (224,)
-
-        raw_cells = (
-            cfg.get("cell_sizes")
-            or cfg.get("min_cell_sizes")
-            or cfg.get("min_cell_size")
-            or cfg.get("cell_size")
-        )
-        if isinstance(raw_cells, (int, float)):
-            cell_sizes = tuple([int(raw_cells)] * len(scales))
-        elif isinstance(raw_cells, (list, tuple)):
-            normalized = [int(float(c)) for c in raw_cells if c is not None]
-            if not normalized:
-                cell_sizes = scales
-            elif len(normalized) == 1 and len(scales) > 1:
-                cell_sizes = tuple([normalized[0]] * len(scales))
-            elif len(normalized) == len(scales):
-                cell_sizes = tuple(normalized)
-            else:
-                cell_sizes = scales
-        else:
-            cell_sizes = scales
-
-        try:
-            n_patches = int(cfg.get("n_patches") or cfg.get("patches") or 0)
-        except (TypeError, ValueError):
-            n_patches = 0
-
-        aggregate = str(cfg.get("aggregate") or "mean").lower()
-        if aggregate not in {"mean", "max", "quality_weighted"}:
-            aggregate = "mean"
-
-        overlap = cfg.get("patch_overlap") or cfg.get("overlap")
-        jitter = cfg.get("patch_jitter") or cfg.get("jitter")
-        max_patches = cfg.get("max_patches") or cfg.get("patch_limit")
-
-        if self.inference_transform is None:
-            raise ValueError(
-                "inference_transform must be provided to Trainer to match service inference pipeline."
-            )
-
-        self.inference_scales: Tuple[int, ...] = tuple(scales)
-        self.inference_cell_sizes: Tuple[int, ...] = tuple(cell_sizes)
-        self.inference_n_patches: int = max(0, n_patches)
-        self.inference_aggregate: str = aggregate
-        self.inference_overlap = overlap
-        self.inference_jitter = jitter
-        try:
-            mp_value = int(max_patches) if max_patches not in (None, "", False) else None
-        except (TypeError, ValueError):
-            mp_value = None
-        if mp_value is not None and mp_value <= 0:
-            mp_value = None
-        self.inference_max_patches = mp_value
-
-    def _evaluate_validation_image(self, image: Image.Image) -> Tuple[torch.Tensor, torch.Tensor]:
-        base_cell_size: Optional[int] = None
-        if self.inference_cell_sizes:
-            base_cell_size = int(self.inference_cell_sizes[0])
-        priority_regions = estimate_priority_regions(
-            image,
-            base_cell_size=base_cell_size,
-        )
-        patch_samples = generate_patches(
-            image,
-            sizes=self.inference_scales,
-            n_patches=self.inference_n_patches,
-            min_cell_size=self.inference_cell_sizes,
-            overlap=self.inference_overlap,
-            jitter=self.inference_jitter,
-            max_patches=self.inference_max_patches,
-            priority_regions=priority_regions,
-        )
-        if not patch_samples:
-            base_probs = torch.tensor([0.5, 0.5], device=self.accel.device, dtype=torch.float32)
-            logits_tensor = torch.log(torch.clamp(base_probs, min=1e-8))
-            return base_probs, logits_tensor
-
-        tensors = []
-        for sample in patch_samples:
-            patch_img = sample.image if sample.image.mode == "RGB" else sample.image.convert("RGB")
-            tensor = self.inference_transform(patch_img).unsqueeze(0)
-            tensors.append(tensor)
-
-        batch_tensor = torch.cat(tensors, dim=0).to(self.accel.device)
-        with self.accel.autocast():
-            logits = self.model(batch_tensor)
-            probs = torch.softmax(logits, dim=1)
-
-        probs_cpu = probs.detach().cpu()
-        patch_scores = [
-            {"real": float(prob[0]), "ai": float(prob[1])}
-            for prob in probs_cpu
-        ]
-        weights = compute_patch_weights(patch_samples)
-        aggregated = aggregate_scores(
-            patch_scores,
-            method=self.inference_aggregate,
-            weights=weights if weights else None,
-        )
-        probs_tensor = torch.tensor(
-            [aggregated["real"], aggregated["ai"]],
-            device=self.accel.device,
-            dtype=torch.float32,
-        )
-        probs_tensor = torch.clamp(probs_tensor, min=1e-8)
-        logits_tensor = torch.log(probs_tensor)
-        return probs_tensor, logits_tensor
 
     def _forward_patch_tensor(self, patches: torch.Tensor) -> torch.Tensor:
         """멀티패치 텐서를 chunk 단위로 모델에 통과시킨다."""
@@ -458,12 +375,26 @@ class Trainer:
                 return self.model(batch)
 
         logits_list: List[torch.Tensor] = []
+        stream = torch.cuda.Stream(device=self.accel.device) if self.accel.device.type == "cuda" else None
+        events: List[torch.cuda.Event] = []
         for chunk in patches.split(chunk_size):
             if chunk.numel() == 0:
                 continue
             batch = chunk.to(self.accel.device, non_blocking=True)
-            with self.accel.autocast():
-                logits_list.append(self.model(batch))
+            if stream is not None:
+                with torch.cuda.stream(stream):
+                    with self.accel.autocast():
+                        logits = self.model(batch)
+                done = torch.cuda.Event()
+                done.record(stream)
+                events.append(done)
+                logits_list.append(logits)
+            else:
+                with self.accel.autocast():
+                    logits_list.append(self.model(batch))
+        if stream is not None:
+            for event in events:
+                event.synchronize()
         if not logits_list:
             batch = patches.to(self.accel.device, non_blocking=True)
             with self.accel.autocast():
@@ -747,33 +678,32 @@ class Trainer:
             pbar.close()
 
         return {"loss": total_loss / max(1, total_count), "acc": total_acc / max(1, total_count)}
+
     @torch.no_grad()
-    def _validate(self) -> Dict[str, float]:
-        if self.val_loader is None:
+    def _validate_standard(self) -> Dict[str, float]:
+        val_loader = self._build_val_loader()
+        if val_loader is None:
             return {"loss": 0.0, "acc": 0.0}
         self.model.eval()
         total_loss = 0.0
         total_acc = 0.0
-        total_count = 0
-        logits_collector = []
-        targets_collector = []
-        eps = 1e-8
+        total_count = 0.0
+        logits_collector: List[torch.Tensor] = []
+        targets_collector: List[torch.Tensor] = []
         env_val_limit = _get_env_limit("TVB_VAL_MAX_STEPS")
         steps_limit = env_val_limit or 0
         try:
-            total_batches = len(self.val_loader)
+            total_batches = len(val_loader)
         except TypeError:
             total_batches = 0
-        if steps_limit > 0:
-            total_steps = min(steps_limit, total_batches)
-        else:
-            total_steps = total_batches
+        total_steps = min(total_batches, steps_limit) if steps_limit > 0 else total_batches
         if env_val_limit is not None and self.system_logger is not None and self.accel.is_main_process:
             self.system_logger.info(
                 "검증 배치를 최대 %d회로 제한합니다 (전체=%d)",
                 total_steps,
                 total_batches,
             )
+
         pbar = None
         if self.accel.is_main_process:
             pbar = tqdm(
@@ -782,188 +712,72 @@ class Trainer:
                 leave=True,
                 dynamic_ncols=True,
             )
+
         steps_processed = 0
-        for batch in self.val_loader:
-            if not batch:
-                continue
-            # Standard (batched tensor) path
-            if (
-                isinstance(batch, (list, tuple))
-                and len(batch) >= 2
-                and isinstance(batch[0], torch.Tensor)
-            ):
-                images = batch[0]
-                targets = batch[1]
+        try:
+            for batch in val_loader:
+                if steps_limit > 0 and steps_processed >= steps_limit:
+                    break
+                if batch is None:
+                    continue
+                if isinstance(batch, dict):
+                    images = batch.get("images") or batch.get("image")
+                    targets = batch.get("targets") or batch.get("target")
+                    if images is None or targets is None:
+                        continue
+                elif isinstance(batch, (list, tuple)) and len(batch) >= 2:
+                    images, targets = batch[0], batch[1]
+                else:
+                    continue
+
+                if isinstance(images, (list, tuple)):
+                    tensor_list = [img for img in images if isinstance(img, torch.Tensor)]
+                    if not tensor_list:
+                        continue
+                    images = torch.stack(tensor_list, dim=0)
+                if not isinstance(images, torch.Tensor):
+                    continue
+
+                if isinstance(targets, (list, tuple)):
+                    targets = torch.tensor(targets, dtype=torch.long)
+                elif not isinstance(targets, torch.Tensor):
+                    targets = torch.tensor(targets, dtype=torch.long)
+
+                images = images.to(self.accel.device, non_blocking=True)
+                targets = targets.to(self.accel.device, non_blocking=True)
+
                 if images.ndim == 3:
                     images = images.unsqueeze(0)
                 if images.ndim != 4:
-                    raise ValueError(f"Unsupported validation image tensor shape: {images.shape}")
-
-                if not isinstance(targets, torch.Tensor):
-                    targets = torch.tensor(targets, dtype=torch.long)
-                targets = targets.to(self.accel.device, non_blocking=True)
-                images = images.to(self.accel.device, non_blocking=True)
+                    continue
 
                 with self.accel.autocast():
                     logits = self.model(images)
                     loss_tensor = torch.nn.functional.cross_entropy(logits, targets)
 
                 batch_loss = float(loss_tensor.detach().item())
-                batch_size = targets.size(0)
                 preds = torch.argmax(logits, dim=1)
                 correct = float((preds == targets).sum().item())
+                batch_size = float(targets.size(0))
 
                 total_loss += batch_loss * batch_size
                 total_acc += correct
-                total_count += float(batch_size)
+                total_count += batch_size
 
                 logits_collector.append(logits.detach().cpu())
                 targets_collector.append(targets.detach().cpu())
-            elif (
-                isinstance(batch, list)
-                and batch
-                and isinstance(batch[0], (list, tuple))
-                and len(batch[0]) >= 1
-                and isinstance(batch[0][0], torch.Tensor)
-                and batch[0][0].dim() == 4
-            ):
-                image_logits: List[torch.Tensor] = []
-                image_targets: List[int] = []
-                for item in batch:
-                    if not item:
-                        continue
-                    patches_tensor = item[0]
-                    metadata = None
-                    target_value = 0
-                    if len(item) >= 3:
-                        metadata = item[1]
-                        target_value = item[2]
-                    elif len(item) == 2:
-                        target_value = item[1]
-                    else:
-                        target_value = 0
 
-                    if not isinstance(patches_tensor, torch.Tensor) or patches_tensor.dim() != 4:
-                        continue
-                    if isinstance(target_value, (list, tuple)) and target_value:
-                        target_value = target_value[0]
-                    if isinstance(target_value, torch.Tensor):
-                        if target_value.ndim == 0:
-                            target_idx = int(target_value.item())
-                        else:
-                            target_idx = int(target_value.view(-1)[0].item())
-                    else:
-                        target_idx = int(target_value)
+                if pbar is not None:
+                    avg_loss = total_loss / max(1.0, total_count)
+                    avg_acc = total_acc / max(1.0, total_count)
+                    pbar.set_postfix(loss=f"{avg_loss:.4f}", acc=f"{avg_acc:.4f}")
+                    pbar.update(1)
+                steps_processed += 1
 
-                    logits_patches = self._forward_patch_tensor(patches_tensor)
-                    probs_patches = torch.softmax(logits_patches, dim=1)
-                    probs_cpu = probs_patches.detach().cpu()
-                    patch_scores = [
-                        {"real": float(prob[0]), "ai": float(prob[1])} for prob in probs_cpu
-                    ]
-
-                    weights: Optional[List[float]] = None
-                    if isinstance(metadata, (list, tuple)) and len(metadata) == len(patch_scores):
-                        weights_candidate: List[float] = []
-                        valid_weights = True
-                        for meta in metadata:
-                            if isinstance(meta, dict):
-                                weights_candidate.append(float(meta.get("weight", 1.0)))
-                            else:
-                                valid_weights = False
-                                break
-                        if valid_weights:
-                            weights = weights_candidate
-
-                    aggregated = aggregate_scores(
-                        patch_scores,
-                        method=self.inference_aggregate,
-                        weights=weights if weights else None,
-                    )
-                    probs_tensor = torch.tensor(
-                        [aggregated["real"], aggregated["ai"]],
-                        device=self.accel.device,
-                        dtype=torch.float32,
-                    )
-                    probs_tensor = torch.clamp(probs_tensor, min=eps)
-                    logits_tensor = torch.log(probs_tensor)
-
-                    prob_value = max(float(probs_tensor[target_idx].item()), eps)
-                    loss_value = -math.log(prob_value)
-                    total_loss += loss_value
-                    pred_idx = int(torch.argmax(probs_tensor).item())
-                    if pred_idx == target_idx:
-                        total_acc += 1.0
-                    total_count += 1.0
-
-                    image_logits.append(logits_tensor.unsqueeze(0))
-                    image_targets.append(target_idx)
-
-                if image_logits:
-                    logits_batch = torch.cat(image_logits, dim=0)
-                    targets_batch = torch.tensor(
-                        image_targets, device=self.accel.device, dtype=torch.long
-                    )
-                    logits_collector.append(logits_batch.detach().cpu())
-                    targets_collector.append(targets_batch.detach().cpu())
-            else:
-                batch_logits_gpu: List[torch.Tensor] = []
-                batch_targets_gpu: List[int] = []
-                # Fallback path: raw images
-                iterable = batch if isinstance(batch, (list, tuple)) else [batch]
-                for item in iterable:
-                    if not item:
-                        continue
-                    if isinstance(item, (tuple, list)) and len(item) >= 2:
-                        image, target = item[0], item[1]
-                    else:
-                        image, target = item, 0
-
-                    if isinstance(image, torch.Tensor):
-                        if image.ndim == 4:
-                            image = self._to_pil(image[0].cpu())
-                        elif image.ndim == 3:
-                            image = self._to_pil(image.cpu())
-                        else:
-                            continue
-                    if not isinstance(image, Image.Image):
-                        continue
-
-                    probs_tensor, logits_tensor = self._evaluate_validation_image(image)
-                    if isinstance(target, torch.Tensor):
-                        target_idx = int(target.item())
-                    else:
-                        target_idx = int(target)
-
-                    loss = -torch.log(torch.clamp(probs_tensor[target_idx], min=eps))
-                    total_loss += float(loss.item())
-                    pred_idx = int(torch.argmax(probs_tensor).item())
-                    if pred_idx == target_idx:
-                        total_acc += 1.0
-                    total_count += 1.0
-
-                    batch_logits_gpu.append(logits_tensor.unsqueeze(0))
-                    batch_targets_gpu.append(target_idx)
-
-                if batch_logits_gpu:
-                    logits_batch = torch.cat(batch_logits_gpu, dim=0).to(self.accel.device)
-                    targets_batch = torch.tensor(
-                        batch_targets_gpu, device=self.accel.device, dtype=torch.long
-                    )
-                    logits_collector.append(logits_batch.detach().cpu())
-                    targets_collector.append(targets_batch.detach().cpu())
-
+        finally:
             if pbar is not None:
-                avg_loss = total_loss / max(1, total_count)
-                avg_acc = total_acc / max(1, total_count)
-                pbar.set_postfix(loss=f"{avg_loss:.4f}", acc=f"{avg_acc:.4f}")
-                pbar.update(1)
-            steps_processed += 1
-            if steps_limit > 0 and steps_processed >= steps_limit:
-                break
-
-        if pbar is not None:
-            pbar.close()
+                pbar.close()
+            self._release_val_loader(val_loader)
 
         summary_tensor = torch.tensor(
             [total_loss, total_acc, total_count],
@@ -1042,12 +856,17 @@ class Trainer:
         metrics.setdefault("val_acc", metrics["acc"])
         return metrics
 
+    @torch.no_grad()
+    def _validate(self) -> Dict[str, float]:
+        return self._validate_standard()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
     def validate_only(self) -> Dict[str, float]:
         """훈련 없이 검증 파이프라인만 실행한다."""
 
+        self._release_train_loader()
         metrics = self._validate()
         if self.accel.is_main_process:
             self.train_logger.info(
@@ -1084,7 +903,6 @@ class Trainer:
             else:
                 full_epochs = max(total_epochs - partial_epochs, 0)
 
-        max_steps_available = len(self.train_loader)
         partial_steps = self.cfg.partial_steps if (self.cfg.partial_steps or 0) > 0 else None
         full_steps = self.cfg.full_steps if (self.cfg.full_steps or 0) > 0 else None
 
@@ -1104,6 +922,10 @@ class Trainer:
         last_val_metrics: Dict[str, float] = {}
 
         for epoch in range(1, total_epochs + 1):
+            if self.train_loader is None:
+                self.train_loader = self._prepare_train_loader(self.train_loader_factory())
+
+            max_steps_available = len(self.train_loader)
             if self.cfg.seed is not None:
                 set_global_seed(int(self.cfg.seed) + epoch)
             if epoch <= partial_epochs:
@@ -1129,6 +951,7 @@ class Trainer:
                     )
 
             train_metrics = self._train_one_epoch(epoch, steps_limit)
+            self._release_train_loader()
             val_metrics = self._validate()
             last_val_metrics = val_metrics
 

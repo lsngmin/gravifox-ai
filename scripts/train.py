@@ -10,6 +10,8 @@ from typing import Any, Dict, Optional
 from accelerate import Accelerator
 from omegaconf import DictConfig, OmegaConf
 
+from torch.utils.data import DataLoader
+
 from core.datasets import build_dataloaders
 from core.models.registry import get_model
 from core.trainer.engine import TrainCfg, Trainer
@@ -61,7 +63,6 @@ def _build_train_config(c: DictConfig) -> TrainCfg:
         full_epochs=trainer_cfg.get("full_epochs"),
         partial_steps=trainer_cfg.get("partial_steps"),
         full_steps=trainer_cfg.get("full_steps"),
-        service_val_pipeline=bool(trainer_cfg["service_val_pipeline"]),
         step_debug_logging=bool(trainer_cfg["step_debug_logging"]),
         seed=getattr(c.run, "seed", None),
         early_stop=bool(early_cfg["enabled"]),
@@ -129,16 +130,46 @@ def r(c: DictConfig) -> Path:
     accelerator.wait_for_everyone()
 
     dataset_cfg = c.dataset
-    train_loader, val_loader, class_names, val_infer_transform, train_augment = build_dataloaders(
-        dataset_cfg,
+    multipatch_cfg = _to_dict(getattr(cfg, "inference", {})) or {}
+    build_kwargs_common = dict(
         world_size=world_size,
         rank=rank,
         seed=cfg.run.seed,
-        return_raw_val_images=train_cfg.service_val_pipeline,
-        return_raw_train_images=True,
-        multipatch_cfg=_to_dict(getattr(cfg, "inference", {})) or {},
-        precompute_val_patches=train_cfg.service_val_pipeline,
+        multipatch_cfg=multipatch_cfg,
+        precompute_val_patches=False,
     )
+    train_loader, _, class_names, val_infer_transform, train_augment = build_dataloaders(
+        dataset_cfg,
+        return_raw_val_images=False,
+        return_raw_train_images=True,
+        build_val=False,
+        **build_kwargs_common,
+    )
+    if train_loader is None:
+        raise RuntimeError("Failed to build training dataloader.")
+
+    def train_loader_factory() -> DataLoader:
+        loader, _, _, _, _ = build_dataloaders(
+            dataset_cfg,
+            return_raw_val_images=False,
+            return_raw_train_images=True,
+            build_val=False,
+            **build_kwargs_common,
+        )
+        if loader is None:
+            raise RuntimeError("Failed to rebuild training dataloader.")
+        return loader
+
+    def val_loader_factory() -> Optional[DataLoader]:
+        _, loader, _, _, _ = build_dataloaders(
+            dataset_cfg,
+            return_raw_val_images=False,
+            return_raw_train_images=False,
+            build_train=False,
+            build_val=True,
+            **build_kwargs_common,
+        )
+        return loader
     if accelerator.is_main_process:
         logger.info("데이터셋 클래스: %s", class_names)
 
@@ -156,12 +187,13 @@ def r(c: DictConfig) -> Path:
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
-        val_loader=val_loader,
+        train_loader_factory=train_loader_factory,
+        val_loader_factory=val_loader_factory,
         out_dir=str(experiment_dir),
         cfg=train_cfg,
         experiment=manager,
         accelerator=accelerator,
-        inference_cfg=_to_dict(getattr(cfg, "inference", {})) or {},
+        inference_cfg=multipatch_cfg,
         inference_transform=val_infer_transform,
         train_augment=train_augment,
     )

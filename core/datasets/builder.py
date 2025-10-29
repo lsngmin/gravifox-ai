@@ -314,22 +314,59 @@ def build_dataloaders(
     return_raw_train_images: bool = False,
     multipatch_cfg: Optional[Dict[str, Any]] = None,
     precompute_val_patches: bool = False,
-) -> Tuple[DataLoader, Optional[DataLoader], list[str], transforms.Compose, Optional[callable]]:
-    """DatasetConfig를 받아 학습/검증 DataLoader를 생성한다."""
+    build_train: bool = True,
+    build_val: bool = True,
+) -> Tuple[Optional[DataLoader], Optional[DataLoader], list[str], transforms.Compose, Optional[callable]]:
+    """DatasetConfig를 받아 학습/검증 DataLoader를 생성한다.
+
+    Args:
+        cfg: Hydra YAML을 파싱한 DatasetConfig 또는 동일 구조의 dict.
+        shuffle_train: 학습 DataLoader에 셔플을 적용할지 여부.
+        world_size: 분산 학습 시 전체 프로세스 수.
+        rank: 현재 프로세스의 rank (0-based).
+        seed: 분산 샘플러에 전달할 시드;
+            None이면 0을 기준으로 재현성 유지 없이 동작.
+        return_raw_val_images: True이면 검증 DataLoader가 원본 이미지를 그대로 반환하여 후처리 단계에서 직접 처리할 수 있게 한다.
+        return_raw_train_images: True이면 학습 DataLoader도 전처리 없이 PIL 이미지를 그대로 반환한다.
+        multipatch_cfg: 멀티패치 전처리를 위한 설정 dict; precompute 플래그가 켜져 있을 때 필수.
+        precompute_val_patches: 검증 데이터에도 멀티패치를 적용하여 collate_fn 없이 원본 패치를 직접 반환한다.
+
+    Returns:
+        (train_loader, val_loader, class_names, val_transform, train_augment):
+            train_loader: 학습용 DataLoader
+            val_loader: 검증용 DataLoader (없으면 None)
+            class_names: 학습 소스에서 추출한 클래스 이름 목록
+            val_transform: 서비스 추론용 기본 검증 transform
+            train_augment: raw train 이미지 요청 시 적용 가능한 추가 증강 callable
+    """
 
     dataset_cfg = load_dataset_config(cfg)
+    loader_cfg = dataset_cfg.loader
+    train_workers = loader_cfg.train_num_workers if loader_cfg.train_num_workers is not None else loader_cfg.num_workers
+    val_workers = loader_cfg.val_num_workers if loader_cfg.val_num_workers is not None else loader_cfg.num_workers
+    train_prefetch = loader_cfg.train_prefetch_factor if loader_cfg.train_prefetch_factor is not None else loader_cfg.prefetch_factor
+    val_prefetch = loader_cfg.val_prefetch_factor if loader_cfg.val_prefetch_factor is not None else loader_cfg.prefetch_factor
+
     loader_kwargs = dict(
-        batch_size=dataset_cfg.loader.batch_size,
-        num_workers=dataset_cfg.loader.num_workers,
-        pin_memory=dataset_cfg.loader.pin_memory,
-        persistent_workers=dataset_cfg.loader.persistent_workers and dataset_cfg.loader.num_workers > 0,
+        batch_size=loader_cfg.batch_size,
+        num_workers=train_workers,
+        pin_memory=loader_cfg.pin_memory,
+        persistent_workers=loader_cfg.persistent_workers,
     )
-    if dataset_cfg.loader.prefetch_factor and dataset_cfg.loader.num_workers > 0:
-        loader_kwargs["prefetch_factor"] = dataset_cfg.loader.prefetch_factor
+    if train_prefetch is not None:
+        loader_kwargs["prefetch_factor"] = train_prefetch
     train_loader_kwargs = dict(loader_kwargs)
     val_loader_kwargs = dict(loader_kwargs)
     train_loader_params = dict(loader_kwargs)
     val_loader_params = dict(loader_kwargs)
+    val_loader_kwargs["num_workers"] = val_workers
+    val_loader_params["num_workers"] = val_workers
+    if val_prefetch is not None:
+        val_loader_kwargs["prefetch_factor"] = val_prefetch
+        val_loader_params["prefetch_factor"] = val_prefetch
+    else:
+        val_loader_kwargs.pop("prefetch_factor", None)
+        val_loader_params.pop("prefetch_factor", None)
 
     train_worker_init = _get_worker_init_fn("train")
     if train_worker_init is not None:
@@ -342,7 +379,6 @@ def build_dataloaders(
     if dataset_cfg.augment and isinstance(dataset_cfg.augment, dict):
         sns_config = dataset_cfg.augment.get("sns")
     sns_aug = build_sns_augment(sns_config)
-    loader_cfg = dataset_cfg.loader
     precompute_patches = bool(getattr(loader_cfg, "precompute_patches", False))
     val_precompute_patches = precompute_val_patches or bool(getattr(loader_cfg, "val_precompute_patches", False))
     if precompute_patches:
@@ -354,169 +390,204 @@ def build_dataloaders(
     val_service_tf = build_val_transforms(dataset_cfg)
     val_tf = val_service_tf
 
-    if return_raw_val_images:
+    if return_raw_val_images and build_val:
         val_loader_kwargs["collate_fn"] = _identity_collate
         val_loader_params["collate_fn"] = _identity_collate
-    if return_raw_train_images:
+    if return_raw_train_images and build_train:
         train_tf = None
         train_loader_kwargs["collate_fn"] = _identity_collate
         train_loader_params["collate_fn"] = _identity_collate
-    if val_precompute_patches:
+    if val_precompute_patches and build_val:
         val_loader_kwargs["collate_fn"] = _identity_collate
         val_loader_params["collate_fn"] = _identity_collate
 
     val_loader_transform = val_tf if not (return_raw_val_images or val_precompute_patches) else None
 
     sources = _resolve_sources(dataset_cfg)
-    train_datasets = []
-    per_source_targets: List[Tuple[str, List[int]]] = []
+    train_loader: Optional[DataLoader] = None
+    train_augment: Optional[Callable] = None
+    class_names: List[str] = []
     included_sources: List[str] = []
-    weight_config = dataset_cfg.source_weights or {}
-    raw_weights: List[float] = []
 
-    if sources:
-        for source in sources:
-            dataset = _build_source_dataset(
-                source,
-                "train",
-                data_root=dataset_cfg.data_root,
-                transform=train_tf,
-                limit=dataset_cfg.train.limit,
-            )
-            if dataset is None:
-                continue
-            try:
-                targets = _extract_targets(dataset)
-            except AttributeError:
-                logger.warning("소스 %s 의 타깃 정보를 가져올 수 없습니다", source)
-                continue
-            if not targets:
-                logger.warning("소스 %s 에 유효한 학습 샘플이 없습니다", source)
-                continue
-            train_datasets.append(dataset)
-            per_source_targets.append((source, targets))
-            included_sources.append(source)
-            raw_weights.append(float(weight_config.get(source, 1.0)))
-
-    if not train_datasets:
-        # fallback: 단일 경로 기반 로딩
-        train_root = dataset_cfg.train.resolve_root()
-        dataset = datasets.ImageFolder(str(train_root), transform=train_tf, loader=_safe_loader)
-        _enforce_class_order(dataset)
-        dataset = _apply_limit(dataset, dataset_cfg.train.limit)
-        train_datasets = [dataset]
-        targets = _extract_targets(dataset)
-        per_source_targets = [(dataset_cfg.source or "default", targets)]
-        included_sources = [dataset_cfg.source or str(train_root)]
-        raw_weights = [1.0]
-
-    num_sources = len(train_datasets)
-    if num_sources == 0:
-        raise RuntimeError("유효한 학습 데이터 소스를 찾을 수 없습니다.")
-
-    normalized_weights: List[float]
-    positive_weights = [w if w > 0 else 1.0 for w in raw_weights]
-    total_weight = sum(positive_weights)
-    if total_weight <= 0:
-        normalized_weights = [1.0 / num_sources] * num_sources
-    else:
-        normalized_weights = [w / total_weight for w in positive_weights]
-
-    if num_sources == 1:
-        train_dataset = train_datasets[0]
-    else:
-        train_dataset = ConcatDataset(train_datasets)
-
-    need_multipatch = precompute_patches or val_precompute_patches
     patch_params: Optional[Dict[str, Any]] = None
-    if need_multipatch:
-        mp_cfg = multipatch_cfg or {}
-        sizes = mp_cfg.get("multiscale") or mp_cfg.get("scales") or [dataset_cfg.image_size]
-        sizes = tuple(int(x) for x in sizes)
-        cell_sizes = (
-            mp_cfg.get("cell_sizes")
-            or mp_cfg.get("min_cell_sizes")
-            or mp_cfg.get("min_cell_size")
-            or sizes
-        )
-        cell_sizes = tuple(int(x) for x in (cell_sizes if isinstance(cell_sizes, (list, tuple)) else (cell_sizes,)))
-        if len(cell_sizes) == 1 and len(sizes) > 1:
-            cell_sizes = tuple([cell_sizes[0]] * len(sizes))
-        patch_params = {
-            "sizes": sizes,
-            "cell_sizes": cell_sizes,
-            "n_patches": int(mp_cfg.get("n_patches", mp_cfg.get("patches", 0)) or 0),
-            "overlap": float(mp_cfg.get("patch_overlap", mp_cfg.get("overlap", 0.0)) or 0.0),
-            "jitter": float(mp_cfg.get("patch_jitter", mp_cfg.get("jitter", 0.0)) or 0.0),
-            "max_patches": int(mp_cfg.get("max_patches", 0) or 0),
-        }
-        if patch_params["max_patches"] <= 0:
-            patch_params["max_patches"] = None
-    if precompute_patches and patch_params is not None:
-        train_dataset = MultipatchDataset(
-            train_dataset,
-            augment=train_pil_augment,
-            patch_transform=val_service_tf,
-            patch_params=patch_params,
-        )
-        train_loader_kwargs["collate_fn"] = _identity_collate
-        train_loader_params["collate_fn"] = _identity_collate
-
-    sample_weights = _build_sample_weights(per_source_targets, normalized_weights)
     distributed = world_size > 1
-    sampler = None
-    use_sampler = sample_weights.numel() > 0 and not distributed
+    use_sampler = False
 
-    if return_raw_train_images:
-        train_loader_params["collate_fn"] = _identity_collate
+    if build_train:
+        train_datasets: List[torch.utils.data.Dataset] = []
+        per_source_targets: List[Tuple[str, List[int]]] = []
+        weight_config = dataset_cfg.source_weights or {}
 
-    if return_raw_val_images:
-        val_loader_params["collate_fn"] = _identity_collate
-    train_drop_last = dataset_cfg.loader.drop_last
-    if return_raw_train_images or precompute_patches:
-        train_drop_last = False
+        if sources:
+            for source in sources:
+                dataset = _build_source_dataset(
+                    source,
+                    "train",
+                    data_root=dataset_cfg.data_root,
+                    transform=train_tf,
+                    limit=dataset_cfg.train.limit,
+                )
+                if dataset is None:
+                    continue
+                targets = _extract_targets(dataset)
+                if not targets:
+                    logger.warning("소스 %s 에 유효한 학습 샘플이 없습니다", source)
+                    continue
+                train_datasets.append(dataset)
+                per_source_targets.append((source, targets))
+                included_sources.append(source)
 
-    if distributed:
-        sampler = DistributedSampler(
-            train_dataset,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=shuffle_train,
-            seed=seed if seed is not None else 0,
-        )
-        params = dict(train_loader_params)
-        params.update(train_loader_kwargs)
-        train_loader = DataLoader(
-            train_dataset,
-            sampler=sampler,
-            drop_last=train_drop_last,
-            **params,
-        )
-    elif use_sampler:
-        sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
-        params = dict(train_loader_params)
-        params.update(train_loader_kwargs)
-        train_loader = DataLoader(
-            train_dataset,
-            sampler=sampler,
-            drop_last=train_drop_last,
-            **params,
-        )
-    else:
-        params = dict(train_loader_params)
-        params.update(train_loader_kwargs)
-        train_loader = DataLoader(
-            train_dataset,
-            shuffle=shuffle_train,
-            drop_last=train_drop_last,
-            **params,
-        )
+        if not train_datasets:
+            train_root = dataset_cfg.train.resolve_root()
+            dataset = datasets.ImageFolder(str(train_root), transform=train_tf, loader=_safe_loader)
+            _enforce_class_order(dataset)
+            dataset = _apply_limit(dataset, dataset_cfg.train.limit)
+            train_datasets = [dataset]
+            targets = _extract_targets(dataset)
+            base_source = dataset_cfg.source or ""
+            if not base_source:
+                raise ValueError("dataset.source must be 지정되어야 합니다.")
+            per_source_targets = [(base_source, targets)]
+            included_sources = [base_source]
+
+        num_sources = len(train_datasets)
+        if num_sources == 0:
+            raise RuntimeError("유효한 학습 데이터 소스를 찾을 수 없습니다.")
+
+        if num_sources > 1:
+            weight_config = dataset_cfg.source_weights or {}
+            missing_weights = [src for src in included_sources if src not in weight_config]
+            if missing_weights:
+                raise ValueError(f"source_weights 설정에 누락된 소스가 있습니다: {missing_weights}")
+            provided_weights = [float(weight_config[src]) for src in included_sources]
+        else:
+            weight_config = dataset_cfg.source_weights or {}
+            provided_weights = (
+                [float(weight_config[included_sources[0]])] if included_sources and included_sources[0] in weight_config else []
+            )
+        if provided_weights:
+            positive_weights = [w if w > 0 else 1.0 for w in provided_weights]
+            total_weight = sum(positive_weights)
+            if total_weight <= 0:
+                raise ValueError("source_weights 값이 모두 0 이하입니다.")
+            normalized_weights: List[float] = [w / total_weight for w in positive_weights]
+        else:
+            normalized_weights = []
+
+        train_dataset = train_datasets[0] if len(train_datasets) == 1 else ConcatDataset(train_datasets)
+
+        need_multipatch = precompute_patches or val_precompute_patches
+        if need_multipatch:
+            if not multipatch_cfg:
+                raise ValueError("precompute_patches를 사용하려면 multipatch 설정이 필요합니다.")
+            mp_cfg = multipatch_cfg
+            try:
+                sizes_iter = mp_cfg["multiscale"]
+            except KeyError as exc:
+                raise KeyError("multipatch 설정에 'multiscale' 키가 필요합니다.") from exc
+            sizes = tuple(int(x) for x in sizes_iter)
+            try:
+                cell_cfg = mp_cfg["cell_sizes"]
+            except KeyError as exc:
+                raise KeyError("multipatch 설정에 'cell_sizes' 키가 필요합니다.") from exc
+            cell_sizes = tuple(int(x) for x in (cell_cfg if isinstance(cell_cfg, (list, tuple)) else (cell_cfg,)))
+            if len(cell_sizes) == 1 and len(sizes) > 1:
+                cell_sizes = tuple([cell_sizes[0]] * len(sizes))
+            try:
+                n_patches = int(mp_cfg["n_patches"])
+            except KeyError as exc:
+                raise KeyError("multipatch 설정에 'n_patches' 키가 필요합니다.") from exc
+            try:
+                overlap = float(mp_cfg["patch_overlap"])
+            except KeyError as exc:
+                raise KeyError("multipatch 설정에 'patch_overlap' 키가 필요합니다.") from exc
+            try:
+                jitter = float(mp_cfg["patch_jitter"])
+            except KeyError as exc:
+                raise KeyError("multipatch 설정에 'patch_jitter' 키가 필요합니다.") from exc
+            try:
+                max_patches_cfg = mp_cfg["max_patches"]
+            except KeyError as exc:
+                raise KeyError("multipatch 설정에 'max_patches' 키가 필요합니다.") from exc
+            patch_params = {
+                "sizes": sizes,
+                "cell_sizes": cell_sizes,
+                "n_patches": n_patches,
+                "overlap": overlap,
+                "jitter": jitter,
+                "max_patches": int(max_patches_cfg),
+            }
+            if patch_params["max_patches"] <= 0:
+                patch_params["max_patches"] = None
+        if precompute_patches and patch_params is not None:
+            train_dataset = MultipatchDataset(
+                train_dataset,
+                augment=train_pil_augment,
+                patch_transform=val_service_tf,
+                patch_params=patch_params,
+            )
+            train_loader_kwargs["collate_fn"] = _identity_collate
+            train_loader_params["collate_fn"] = _identity_collate
+
+        sample_weights = _build_sample_weights(per_source_targets, normalized_weights) if normalized_weights else torch.DoubleTensor()
+        sampler = None
+        use_sampler = sample_weights.numel() > 0 and not distributed
+
+        if return_raw_train_images:
+            train_loader_params["collate_fn"] = _identity_collate
+
+        train_drop_last = loader_cfg.drop_last
+        if return_raw_train_images or precompute_patches:
+            train_drop_last = False
+
+        if distributed:
+            sampler = DistributedSampler(
+                train_dataset,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=shuffle_train,
+                seed=seed if seed is not None else 0,
+            )
+            params = dict(train_loader_params)
+            params.update(train_loader_kwargs)
+            train_loader = DataLoader(
+                train_dataset,
+                sampler=sampler,
+                drop_last=train_drop_last,
+                **params,
+            )
+        elif use_sampler:
+            sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+            params = dict(train_loader_params)
+            params.update(train_loader_kwargs)
+            train_loader = DataLoader(
+                train_dataset,
+                sampler=sampler,
+                drop_last=train_drop_last,
+                **params,
+            )
+        else:
+            params = dict(train_loader_params)
+            params.update(train_loader_kwargs)
+            train_loader = DataLoader(
+                train_dataset,
+                shuffle=shuffle_train,
+                drop_last=train_drop_last,
+                **params,
+            )
+
+        class_names = _get_class_names(train_datasets[0]) if train_datasets else []
+        if precompute_patches:
+            train_augment = None
+        else:
+            train_augment = sns_aug if return_raw_train_images else None
 
     val_loader: Optional[DataLoader] = None
     val_size = 0
-    if dataset_cfg.val is not None:
+    if build_val and dataset_cfg.val is not None:
+        eval_sources = included_sources if included_sources else (sources if sources else ([dataset_cfg.source] if dataset_cfg.source else []))
         val_datasets = []
-        for source in included_sources:
+        for source in eval_sources:
             dataset = _build_source_dataset(
                 source,
                 "val",
@@ -527,7 +598,7 @@ def build_dataloaders(
             if dataset is None:
                 continue
             val_datasets.append(dataset)
-        if not val_datasets and not sources:
+        if not val_datasets and not eval_sources:
             val_root = dataset_cfg.val.resolve_root()
             dataset = datasets.ImageFolder(str(val_root), transform=val_loader_transform, loader=_safe_loader)
             _enforce_class_order(dataset)
@@ -570,35 +641,29 @@ def build_dataloaders(
             )
         else:
             logger.warning("유효한 검증 데이터를 찾을 수 없어 val_loader를 생성하지 않습니다.")
-            params = dict(val_loader_params)
-            params.update(val_loader_kwargs)
             val_loader = None
 
-    train_size = len(train_dataset)
-    try:
-        class_names = _get_class_names(train_datasets[0])
-    except Exception:
-        class_names = []
+        if not class_names and val_datasets:
+            class_names = _get_class_names(val_datasets[0])
+
+    train_size = len(train_loader.dataset) if train_loader is not None else 0
 
     preset_label = None
     if sns_config is not None and hasattr(sns_config, "get"):
         preset_label = sns_config.get("name") or sns_config.get("type")
 
-    source_label = "+".join(included_sources)
-    if int(os.environ.get("RANK", "0")) == 0:
-        sampler_label = "distributed" if distributed else ("Weighted" if use_sampler else ("shuffle" if shuffle_train else "sequential"))
+    source_label = "+".join(included_sources) if included_sources else "+".join(sources) if sources else (dataset_cfg.source or "")
+    if int(os.environ.get("RANK", "0")) == 0 and (build_train or build_val):
+        sampler_label = "distributed" if distributed else ("weighted" if use_sampler else ("shuffle" if shuffle_train else "sequential"))
         logger.info(
-            "데이터로더 준비 완료 - train=%d, val=%d, batch=%d, workers=%d, augment=%s, sources=%s, sampler=%s",
+            "데이터로더 준비 완료 - train=%d, val=%d, batch=%d, workers(train=%d/val=%d), augment=%s, sources=%s, sampler=%s",
             train_size,
             val_size,
-            dataset_cfg.loader.batch_size,
-            dataset_cfg.loader.num_workers,
+            loader_cfg.batch_size,
+            train_workers,
+            val_workers,
             str(preset_label),
             source_label,
             sampler_label,
         )
-    if precompute_patches:
-        train_augment = None
-    else:
-        train_augment = sns_aug if return_raw_train_images else None
     return train_loader, val_loader, list(class_names), val_service_tf, train_augment

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 try:
     from omegaconf import DictConfig, OmegaConf
@@ -47,14 +47,17 @@ class DatasetSplitConfig:
 @dataclass
 class LoaderConfig:
     """DataLoader 관련 파라미터."""
-
-    batch_size: int = 64
-    num_workers: int = 8
-    pin_memory: bool = True
-    persistent_workers: bool = True
-    drop_last: bool = True
-    prefetch_factor: Optional[int] = None
-    precompute_patches: bool = False
+    batch_size: int
+    num_workers: int
+    pin_memory: bool
+    persistent_workers: bool
+    drop_last: bool
+    prefetch_factor: Optional[int]
+    precompute_patches: bool
+    train_num_workers: Optional[int] = None
+    val_num_workers: Optional[int] = None
+    train_prefetch_factor: Optional[int] = None
+    val_prefetch_factor: Optional[int] = None
 
 
 @dataclass
@@ -74,14 +77,6 @@ class DatasetConfig:
     val: Optional[DatasetSplitConfig] = None
 
 
-def _maybe_to_container(cfg: Any) -> Dict[str, Any]:
-    """DictConfig → dict 변환 헬퍼."""
-
-    if OmegaConf is not None and isinstance(cfg, DictConfig):
-        return OmegaConf.to_container(cfg, resolve=True)  # type: ignore[arg-type]
-    return cfg
-
-
 def transform_specs(entries: Iterable[Dict[str, Any]]) -> List[TransformSpec]:
     """Dict 형태의 변환 리스트를 TransformSpec으로 변환."""
 
@@ -96,47 +91,85 @@ def transform_specs(entries: Iterable[Dict[str, Any]]) -> List[TransformSpec]:
         specs.append(TransformSpec(type=str(entry["type"]), params=params))
     return specs
 
+def _to_plain_dict(value: Any) -> Dict[str, Any]:
+    if OmegaConf is not None and isinstance(value, DictConfig):
+        return OmegaConf.to_container(value, resolve=True)  # type: ignore[arg-type]
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise TypeError("expected mapping-like configuration")
 
-def load_dataset_config(cfg: Any) -> DatasetConfig:
-    """임의의 입력(dict/DictConfig/dataclass)을 DatasetConfig로 정규화."""
+
+def load_dataset_config(cfg: DatasetConfig | Mapping[str, Any]) -> DatasetConfig:
+    """DatasetConfig 또는 매핑 객체를 DatasetConfig로 정규화한다."""
 
     if isinstance(cfg, DatasetConfig):
         return cfg
 
-    data = _maybe_to_container(cfg)
-    if not isinstance(data, dict):
-        raise TypeError("dataset config must be dict-like")
+    if OmegaConf is not None and isinstance(cfg, DictConfig):
+        config_dict = OmegaConf.to_container(cfg, resolve=True)  # type: ignore[arg-type]
+    elif isinstance(cfg, Mapping):
+        config_dict = dict(cfg)
+    else:
+        raise TypeError("dataset config must be mapping-like or DatasetConfig")
 
-    norm = data.get("normalization", {})
-    normalization = NormalizationConfig(**norm) if not isinstance(norm, NormalizationConfig) else norm
+    normalization_cfg = config_dict.get("normalization")
+    if isinstance(normalization_cfg, NormalizationConfig):
+        normalization = normalization_cfg
+    else:
+        normalization_dict = (
+            _to_plain_dict(normalization_cfg) if normalization_cfg is not None else {}
+        )
+        normalization = NormalizationConfig(**normalization_dict)
 
-    loader_cfg = data.get("loader", {})
-    loader = LoaderConfig(**loader_cfg) if not isinstance(loader_cfg, LoaderConfig) else loader_cfg
+    loader_cfg = config_dict.get("loader")
+    if isinstance(loader_cfg, LoaderConfig):
+        loader = loader_cfg
+    else:
+        loader_dict = _to_plain_dict(loader_cfg or {})
+        loader = LoaderConfig(**loader_dict)
 
-    train_cfg = data.get("train", {})
-    train = DatasetSplitConfig(
-        root=train_cfg.get("root", "./train"),
-        transforms=transform_specs(train_cfg.get("transforms", [])),
-        limit=train_cfg.get("limit"),
-    )
-
-    val_cfg = data.get("val")
-    val: Optional[DatasetSplitConfig] = None
-    if val_cfg:
-        val = DatasetSplitConfig(
-            root=val_cfg.get("root", "./val"),
-            transforms=transform_specs(val_cfg.get("transforms", [])),
-            limit=val_cfg.get("limit"),
+    train_cfg = config_dict.get("train")
+    if isinstance(train_cfg, DatasetSplitConfig):
+        train = train_cfg
+    else:
+        train_dict = _to_plain_dict(train_cfg or {})
+        train = DatasetSplitConfig(
+            root=train_dict.get("root", "./train"),
+            transforms=transform_specs(train_dict.get("transforms", [])),
+            limit=train_dict.get("limit"),
         )
 
+    val_cfg = config_dict.get("val")
+    if isinstance(val_cfg, DatasetSplitConfig):
+        val = val_cfg
+    elif val_cfg:
+        val_dict = _to_plain_dict(val_cfg)
+        val = DatasetSplitConfig(
+            root=val_dict.get("root", "./val"),
+            transforms=transform_specs(val_dict.get("transforms", [])),
+            limit=val_dict.get("limit"),
+        )
+    else:
+        val = None
+
+    augment_cfg = config_dict.get("augment")
+    if augment_cfg is None:
+        augment = None
+    elif isinstance(augment_cfg, Mapping):
+        augment = dict(augment_cfg)
+    elif OmegaConf is not None and isinstance(augment_cfg, DictConfig):
+        augment = OmegaConf.to_container(augment_cfg, resolve=True)  # type: ignore[arg-type]
+    else:
+        augment = augment_cfg
+
     return DatasetConfig(
-        name=data.get("name", "standard"),
-        image_size=int(data.get("image_size", 224)),
-        data_root=str(data.get("data_root", "./data")),
-        source=str(data.get("source", "")),
-        sources=list(data.get("sources", [])),
-        source_weights=dict(data.get("source_weights", {})),
-        augment=_maybe_to_container(data.get("augment")) if data.get("augment") is not None else None,
+        name=str(config_dict.get("name", "standard")),
+        image_size=int(config_dict.get("image_size", 224)),
+        data_root=str(config_dict.get("data_root", "./data")),
+        source=str(config_dict.get("source", "")),
+        sources=list(config_dict.get("sources", [])),
+        source_weights=dict(config_dict.get("source_weights", {})),
+        augment=augment,
         normalization=normalization,
         loader=loader,
         train=train,
