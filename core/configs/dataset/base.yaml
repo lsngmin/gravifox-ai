@@ -39,13 +39,13 @@ normalization:
 
 loader:
   batch_size: 256
-  num_workers: 16
+  num_workers: 14
   pin_memory: true
   persistent_workers: false
   drop_last: true
   prefetch_factor: 3
   precompute_patches: true
-  train_num_workers: 25
+  train_num_workers: 16
   val_num_workers: 6
-  train_prefetch_factor: 6
+  train_prefetch_factor: 5
   val_prefetch_factor: 4
