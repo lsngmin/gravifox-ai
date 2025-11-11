@@ -5,12 +5,11 @@ import os
 
 import hydra
 import torch
+import torch.distributed as dist
 from pathlib import Path
 from typing import Any, Dict, Optional
 from accelerate import Accelerator
 from omegaconf import DictConfig, OmegaConf
-
-from torch.utils.data import DataLoader
 
 from core.datasets import build_dataloaders
 from core.models.registry import get_model
@@ -20,6 +19,20 @@ from core.utils.logger import get_logger, setup_experiment_loggers
 from core.utils.seed import set_seed
 
 logger = get_logger(__name__)
+
+_NCCL_ENV_DEFAULTS: Dict[str, str] = {
+    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+    "TORCH_NCCL_BLOCKING_WAIT": "1",
+    "NCCL_TIMEOUT": "1800",
+}
+
+
+def _apply_nccl_env_defaults() -> None:
+    """NCCL 관련 기본 환경 변수를 설정한다."""
+
+    for key, value in _NCCL_ENV_DEFAULTS.items():
+        os.environ.setdefault(key, value)
+
 
 def _to_dict(cfg: Any) -> Dict[str, Any]:
     if isinstance(cfg, DictConfig):
@@ -39,6 +52,15 @@ def _build_train_config(c: DictConfig) -> TrainCfg:
 
     early_cfg = trainer_cfg["early_stopping"]
     monitor_cfg = trainer_cfg["monitor"]
+
+    def _optional_positive_int(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
 
     return TrainCfg(
         epochs=int(trainer_cfg["epochs"]),
@@ -63,6 +85,8 @@ def _build_train_config(c: DictConfig) -> TrainCfg:
         full_epochs=trainer_cfg.get("full_epochs"),
         partial_steps=trainer_cfg.get("partial_steps"),
         full_steps=trainer_cfg.get("full_steps"),
+        max_train_steps=_optional_positive_int(trainer_cfg.get("train_max_steps")),
+        max_val_steps=_optional_positive_int(trainer_cfg.get("val_max_steps")),
         step_debug_logging=bool(trainer_cfg["step_debug_logging"]),
         seed=getattr(c.run, "seed", None),
         early_stop=bool(early_cfg["enabled"]),
@@ -80,9 +104,49 @@ def r(c: DictConfig) -> Path:
     train_cfg = train_config
 
     # GPU 세팅 확인
-    if torch.cuda.is_available() and (local_rank := os.environ.get("LOCAL_RANK")) is not None:
-        torch.cuda.set_device(int(local_rank))
+    _apply_nccl_env_defaults()
+    master_addr = os.environ.get("MASTER_ADDR")
+    if not master_addr or master_addr.lower() == "localhost":
+        os.environ["MASTER_ADDR"] = "127.0.0.1"
+
+    local_rank_env = os.environ.get("LOCAL_RANK")
+    if torch.cuda.is_available() and local_rank_env is not None:
+        device_id = int(local_rank_env)
+        torch.cuda.set_device(device_id)
+        if dist.is_available() and not dist.is_initialized():
+            backend = os.environ.get("ACCELERATE_PROCESS_GROUP_BACKEND")
+            if not backend:
+                backend = "nccl" if torch.cuda.is_available() else "gloo"
+            rank_env = os.environ.get("RANK")
+            world_env = os.environ.get("WORLD_SIZE")
+            rank = int(rank_env) if rank_env is not None else None
+            world_size = int(world_env) if world_env is not None else None
+            device = torch.device("cuda", device_id) if backend == "nccl" else None
+            init_kwargs: Dict[str, Any] = {"backend": backend}
+            if rank is not None:
+                init_kwargs["rank"] = rank
+            if world_size is not None:
+                init_kwargs["world_size"] = world_size
+            if device is not None:
+                init_kwargs["device_id"] = device
+            dist.init_process_group(**init_kwargs)
     accelerator = Accelerator()
+
+    if accelerator.num_processes != 2:
+        raise RuntimeError(
+            f"분산 학습은 반드시 2개의 GPU에서만 수행해야 합니다. "
+            f"현재 프로세스 수: {accelerator.num_processes}."
+        )
+
+    if not accelerator.is_main_process:
+        suppressed_loggers = (
+            "timm",
+            "huggingface_hub",
+            "gravifox.system",
+            "gravifox.train",
+        )
+        for logger_name in suppressed_loggers:
+            logging.getLogger(logger_name).setLevel(logging.ERROR)
 
     # 시드 동기화
     set_seed((c.run.seed or 0) + accelerator.process_index)
@@ -130,49 +194,21 @@ def r(c: DictConfig) -> Path:
     accelerator.wait_for_everyone()
 
     dataset_cfg = c.dataset
-    multipatch_cfg = _to_dict(getattr(cfg, "inference", {})) or {}
-    build_kwargs_common = dict(
+    eval_only = bool(getattr(cfg.run, "eval_only", False) or getattr(cfg.run, "validate_only", False))
+
+    train_loader, val_loader, class_names, _, _ = build_dataloaders(
+        dataset_cfg,
+        build_train=not eval_only,
+        build_val=True,
         world_size=world_size,
         rank=rank,
         seed=cfg.run.seed,
-        multipatch_cfg=multipatch_cfg,
-        precompute_val_patches=False,
+        shuffle_train=not eval_only,
     )
-    train_loader, _, class_names, val_infer_transform, train_augment = build_dataloaders(
-        dataset_cfg,
-        return_raw_val_images=False,
-        return_raw_train_images=True,
-        build_val=False,
-        shuffle_train=True,
-        **build_kwargs_common,
-    )
-    if train_loader is None:
-        raise RuntimeError("Failed to build training dataloader.")
-
-    def train_loader_factory() -> DataLoader:
-        loader, _, _, _, _ = build_dataloaders(
-            dataset_cfg,
-            return_raw_val_images=False,
-            return_raw_train_images=True,
-            build_val=False,
-            shuffle_train=True,
-            **build_kwargs_common,
-        )
-        if loader is None:
-            raise RuntimeError("Failed to rebuild training dataloader.")
-        return loader
-
-    def val_loader_factory() -> Optional[DataLoader]:
-        _, loader, _, _, _ = build_dataloaders(
-            dataset_cfg,
-            return_raw_val_images=False,
-            return_raw_train_images=False,
-            build_train=False,
-            build_val=True,
-            shuffle_train=False,
-            **build_kwargs_common,
-        )
-        return loader
+    if val_loader is None:
+        raise RuntimeError("검증 DataLoader를 생성하지 못했습니다.")
+    if accelerator.is_main_process and train_loader is None and not eval_only:
+        logger.warning("학습용 DataLoader가 비어 있습니다. 설정을 확인하세요.")
     if accelerator.is_main_process:
         logger.info("데이터셋 클래스: %s", class_names)
 
@@ -190,17 +226,11 @@ def r(c: DictConfig) -> Path:
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
-        train_loader_factory=train_loader_factory,
-        val_loader_factory=val_loader_factory,
-        out_dir=str(experiment_dir),
+        val_loader=val_loader,
         cfg=train_cfg,
         experiment=manager,
         accelerator=accelerator,
-        inference_cfg=multipatch_cfg,
-        inference_transform=val_infer_transform,
-        train_augment=train_augment,
     )
-    eval_only = bool(getattr(cfg.run, "eval_only", False) or getattr(cfg.run, "validate_only", False))
     if eval_only:
         final_val_metrics = trainer.validate_only()
     else:

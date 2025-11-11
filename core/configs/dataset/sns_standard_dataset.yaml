@@ -5,10 +5,12 @@ defaults:
 
 name: sns_standard_dataset
 loader:
-  batch_size: 256
+  batch_size: 128
   num_workers: 20
   prefetch_factor: 8
   drop_last: true
+  train_fraction: 0.65
+  train_fraction: 0.65
 train:
   transforms:
     - type: RandomHorizontalFlip

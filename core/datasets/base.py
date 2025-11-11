@@ -58,6 +58,8 @@ class LoaderConfig:
     val_num_workers: Optional[int] = None
     train_prefetch_factor: Optional[int] = None
     val_prefetch_factor: Optional[int] = None
+    train_fraction: float = 1.0
+    val_fraction: float = 1.0
 
 
 @dataclass

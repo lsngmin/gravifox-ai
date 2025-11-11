@@ -27,7 +27,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 import sys
 import os
 
@@ -42,6 +42,20 @@ from core.utils.logger import get_logger
 
 
 logger = get_logger(__name__)
+
+
+def _apply_cuda_visible_devices(env: Dict[str, str], *, gpus: Optional[str], num_proc: int) -> None:
+    """Accelerate 실행 전에 CUDA 디바이스 매핑을 설정한다."""
+
+    if gpus:
+        env["CUDA_VISIBLE_DEVICES"] = gpus
+        logger.info("CUDA_VISIBLE_DEVICES=%s", gpus)
+        return
+
+    if num_proc > 0 and "CUDA_VISIBLE_DEVICES" not in env:
+        auto_map = ",".join(str(idx) for idx in range(num_proc))
+        env["CUDA_VISIBLE_DEVICES"] = auto_map
+        logger.info("CUDA_VISIBLE_DEVICES=%s (auto)", auto_map)
 
 
 def load_base_config(path: Path) -> Dict:
@@ -203,7 +217,9 @@ def main() -> None:
 
     # 순차 실행
     env = os.environ.copy()
-    if args.gpus:
+    if args.launcher == "accelerate":
+        _apply_cuda_visible_devices(env, gpus=args.gpus, num_proc=max(1, args.num_proc))
+    elif args.gpus:
         env["CUDA_VISIBLE_DEVICES"] = args.gpus
         logger.info("CUDA_VISIBLE_DEVICES=%s", args.gpus)
 

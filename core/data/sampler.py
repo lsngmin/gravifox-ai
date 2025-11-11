@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import math
 import random
 import shutil
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Iterator, List, Tuple, Sized
+
+import torch
+from torch.utils.data import Sampler
+from torch.utils.data.distributed import DistributedSampler
 
 from core.utils.logger import get_logger
 
@@ -236,3 +241,118 @@ def sample_datasets(config: dict) -> None:
         )
 
     logger.info("혼합 샘플링 완료 - 출력 경로: %s", output_dir)
+
+
+class FractionalRandomSampler(Sampler[int]):
+    """단일 프로세스에서 데이터셋 일부만 무작위로 추출하는 샘플러."""
+
+    def __init__(
+        self,
+        data_source: Sized,  # type: ignore[type-arg]
+        fraction: float,
+        *,
+        seed: int = 0,
+        shuffle: bool = True,
+    ) -> None:
+        if fraction <= 0:
+            raise ValueError("fraction 값은 0보다 커야 합니다.")
+        self.data_source = data_source
+        self.fraction = min(float(fraction), 1.0)
+        self.seed = int(seed)
+        self.shuffle = bool(shuffle)
+        self.epoch = 0
+
+    def __iter__(self) -> Iterator[int]:
+        dataset_len = len(self.data_source)  # type: ignore[arg-type]
+        if dataset_len == 0:
+            return iter([])
+        target = max(1, int(math.floor(dataset_len * self.fraction)))
+        if self.shuffle:
+            generator = torch.Generator()
+            generator.manual_seed(self.seed + self.epoch)
+            indices = torch.randperm(dataset_len, generator=generator).tolist()
+        else:
+            indices = list(range(dataset_len))
+        return iter(indices[:target])
+
+    def __len__(self) -> int:
+        dataset_len = len(self.data_source)  # type: ignore[arg-type]
+        if dataset_len == 0:
+            return 0
+        return max(1, int(math.floor(dataset_len * self.fraction)))
+
+    def set_epoch(self, epoch: int) -> None:
+        """에폭 기반으로 난수 시드를 조정한다."""
+
+        self.epoch = int(epoch)
+
+
+class FractionalDistributedSampler(DistributedSampler):
+    """분산 학습 환경에서 데이터셋 일부만 균등하게 샘플링하는 샘플러."""
+
+    def __init__(
+        self,
+        dataset,
+        fraction: float,
+        *,
+        num_replicas: int | None = None,
+        rank: int | None = None,
+        shuffle: bool = True,
+        seed: int = 0,
+        drop_last: bool = False,
+    ) -> None:
+        if fraction <= 0:
+            raise ValueError("fraction 값은 0보다 커야 합니다.")
+        self.fraction = min(float(fraction), 1.0)
+        super().__init__(
+            dataset,
+            num_replicas=num_replicas,
+            rank=rank,
+            shuffle=shuffle,
+            seed=seed,
+            drop_last=drop_last,
+        )
+        self._update_counts()
+
+    def _update_counts(self) -> None:
+        dataset_len = len(self.dataset)  # type: ignore[arg-type]
+        if dataset_len == 0:
+            self.num_samples = 0
+            self.total_size = 0
+            return
+        target = max(1, int(math.floor(dataset_len * self.fraction)))
+        if self.drop_last:
+            num_samples = target // self.num_replicas
+        else:
+            num_samples = int(math.ceil(target / self.num_replicas))
+        num_samples = max(1, num_samples)
+        self.num_samples = num_samples
+        self.total_size = self.num_samples * self.num_replicas
+
+    def __iter__(self) -> Iterator[int]:
+        self._update_counts()
+        if self.total_size == 0:
+            return iter([])
+        if self.shuffle:
+            generator = torch.Generator()
+            generator.manual_seed(self.seed + self.epoch)
+            indices = torch.randperm(len(self.dataset), generator=generator).tolist()
+        else:
+            indices = list(range(len(self.dataset)))
+        if not self.drop_last:
+            padding_size = self.total_size - len(indices)
+            if padding_size <= 0:
+                indices = indices[:self.total_size]
+            else:
+                indices += indices[:padding_size]
+        else:
+            indices = indices[:self.total_size]
+        if len(indices) < self.total_size:
+            padding_size = self.total_size - len(indices)
+            indices += indices[:padding_size]
+        indices = indices[self.rank : self.total_size : self.num_replicas]
+        return iter(indices)
+
+    def __len__(self) -> int:
+        self._update_counts()
+        return self.num_samples
