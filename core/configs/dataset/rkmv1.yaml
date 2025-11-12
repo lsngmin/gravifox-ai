@@ -1,0 +1,45 @@
+name: rkmv1_dataset
+
+data_root: /home/smin/datasets/genimage
+source: imagenet_ai_0508_adm
+sources:
+  - imagenet_ai_0419_biggan
+  - imagenet_ai_0419_sdv4
+  - imagenet_ai_0419_vqdm
+  - imagenet_ai_0424_sdv5
+  - imagenet_ai_0424_wukong
+  - imagenet_ai_0508_adm
+  - imagenet_glide
+  - imagenet_midjourney
+source_weights:
+  imagenet_ai_0419_biggan: 1.0
+  imagenet_ai_0419_sdv4: 1.0
+  imagenet_ai_0419_vqdm: 1.0
+  imagenet_ai_0424_sdv5: 1.0
+  imagenet_ai_0424_wukong: 1.0
+  imagenet_ai_0508_adm: 1.0
+  imagenet_glide: 1.0
+  imagenet_midjourney: 1.0
+image_size: 512
+preprocess: rkmv1
+
+train:
+  root: ${dataset.data_root}/${dataset.source}/train
+  transforms: []
+val:
+  root: ${dataset.data_root}/${dataset.source}/val
+  transforms: []
+
+normalization:
+  mean: [0.48145466, 0.4578275, 0.40821073]
+  std: [0.26862954, 0.26130258, 0.27577711]
+
+loader:
+  batch_size: 256
+  num_workers: 14
+  pin_memory: true
+  persistent_workers: true
+  drop_last: false
+  prefetch_factor: 4
+  precompute_patches: false
+  skip_corrupt_check: true

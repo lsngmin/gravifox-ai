@@ -1,0 +1,28 @@
+epochs: 30
+partial_epochs: 20
+full_epochs: 10
+partial_steps: null
+full_steps: null
+train_max_steps: null
+val_max_steps: null
+mixed_precision: fp16
+grad_accum_steps: 1
+log_interval: 25
+criterion: custom
+label_smoothing: 0.0
+max_grad_norm: 1.0
+patch_chunk_size: 12
+step_debug_logging: false
+
+monitor:
+  key: val_loss
+  mode: min
+
+checkpoint:
+  save_interval: 1
+
+early_stopping:
+  enabled: true
+  patience: 6
+  monitor: val_loss
+  mode: min

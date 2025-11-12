@@ -838,9 +838,14 @@ class VitInferenceService:
         base_cell_size: Optional[int] = None
         if pipeline.inference_cell_sizes:
             base_cell_size = int(pipeline.inference_cell_sizes[0])
+        max_regions = 4
+        if pipeline.inference_n_patches and pipeline.inference_n_patches > 0:
+            max_regions = min(max_regions, max(1, int(pipeline.inference_n_patches)))
+        if pipeline.inference_max_patches and pipeline.inference_max_patches > 0:
+            max_regions = min(max_regions, int(pipeline.inference_max_patches))
         regions = estimate_priority_regions(
             image,
-            max_regions=4,
+            max_regions=max_regions,
             base_cell_size=base_cell_size,
         )
         if regions:

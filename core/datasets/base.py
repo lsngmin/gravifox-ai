@@ -47,18 +47,20 @@ class DatasetSplitConfig:
 @dataclass
 class LoaderConfig:
     """DataLoader 관련 파라미터."""
-    batch_size: int
-    num_workers: int
-    pin_memory: bool
-    persistent_workers: bool
-    drop_last: bool
-    prefetch_factor: Optional[int]
-    precompute_patches: bool
+
+    batch_size: int = 32
+    num_workers: int = 8
+    pin_memory: bool = True
+    persistent_workers: bool = True
+    drop_last: bool = False
+    prefetch_factor: Optional[int] = None
+    precompute_patches: bool = False
     train_num_workers: Optional[int] = None
     val_num_workers: Optional[int] = None
     train_prefetch_factor: Optional[int] = None
     val_prefetch_factor: Optional[int] = None
     train_fraction: float = 1.0
+    skip_corrupt_check: bool = False
     val_fraction: float = 1.0
 
 
@@ -68,6 +70,7 @@ class DatasetConfig:
 
     name: str = "standard"
     image_size: int = 224
+    preprocess: Optional[str] = None
     data_root: str = "./data"
     source: str = ""
     sources: List[str] = field(default_factory=list)
@@ -167,6 +170,7 @@ def load_dataset_config(cfg: DatasetConfig | Mapping[str, Any]) -> DatasetConfig
     return DatasetConfig(
         name=str(config_dict.get("name", "standard")),
         image_size=int(config_dict.get("image_size", 224)),
+        preprocess=str(config_dict.get("preprocess") or "").strip() or None,
         data_root=str(config_dict.get("data_root", "./data")),
         source=str(config_dict.get("source", "")),
         sources=list(config_dict.get("sources", [])),

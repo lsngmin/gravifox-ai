@@ -1,0 +1,78 @@
+augment:
+  sns:
+    gamma:
+    - 0.8
+    - 1.2
+    jpeg_q:
+    - 35
+    - 90
+    noise_sigma:
+    - 0.0
+    - 4.0
+    repeats:
+    - 1
+    - 3
+    resize_long:
+    - 512
+    - 2048
+    watermark_alpha:
+    - 0.1
+    - 0.3
+    webp_q:
+    - 35
+    - 90
+data:
+  datasets: []
+  num_workers: 12
+  train_dir: /home/smin/datasets/genimage/ADM/imagenet_ai_0508_adm/train
+  val_dir: /home/smin/datasets/genimage/ADM/imagenet_ai_0508_adm/val
+inference:
+  aggregate: mean
+  multiscale:
+  - 224
+  - 336
+  n_patches: 12
+  uncertain_band:
+  - 0.45
+  - 0.55
+logging:
+  level: INFO
+model:
+  name: residual
+  num_classes: 2
+  params:
+    embed_dim: 128
+    in_channels: 3
+seed: 1337
+train:
+  batch_size: 512
+  checkpoint:
+    mode: min
+    monitor: val_loss
+    save_best: true
+  criterion: ce
+  early_stopping:
+    enabled: true
+    mode: min
+    monitor: val_loss
+    patience: 8
+  epochs: 40
+  grad_accum_steps: 2
+  img_size: 224
+  log_interval: 50
+  mixed_precision: fp16
+  optimizer:
+    lr: 0.0001
+    name: lamb
+    weight_decay: 0.05
+  scheduler:
+    factor: 0.5
+    min_lr: 1.0e-06
+    mode: min
+    monitor: val_loss
+    name: cosine
+    patience: 3
+    warmup_epochs: 5
+  label_smoothing: 0.1
+metadata:
+  experiment_id: E14

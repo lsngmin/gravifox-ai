@@ -5,7 +5,7 @@ import math
 import random
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -20,6 +20,16 @@ from .registry import register
 
 
 logger = get_logger(__name__)
+_DEFAULT_INFER_TRANSFORM = transforms.Compose(
+    [
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=(0.485, 0.456, 0.406),
+            std=(0.229, 0.224, 0.225),
+        ),
+    ]
+)
 
 
 @dataclass
@@ -740,16 +750,13 @@ def infer_patches(
     patches: Iterable[Union[PatchSample, Image.Image]],
     device: str = "cuda",
     fp16: bool = True,
+    preprocess: Optional[Callable[[Image.Image], torch.Tensor]] = None,
 ) -> List[dict]:
     """여러 패치를 모델에 통과시켜 점수를 반환한다."""
 
     model.eval()
     model.to(device)
-    preprocess = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-    ])
+    transform = preprocess or _DEFAULT_INFER_TRANSFORM
 
     scores: List[dict] = []
     from contextlib import nullcontext
@@ -760,7 +767,8 @@ def infer_patches(
         with autocast():
             for patch in patches:
                 image = patch.image if isinstance(patch, PatchSample) else patch
-                tensor = preprocess(image).unsqueeze(0).to(device)
+                rgb_image = image if image.mode == "RGB" else image.convert("RGB")
+                tensor = transform(rgb_image).unsqueeze(0).to(device)
                 logits = model(tensor)
                 probs = torch.softmax(logits, dim=1)[0]
                 scores.append({"ai": float(probs[1].item()), "real": float(probs[0].item())})

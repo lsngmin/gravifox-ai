@@ -7,6 +7,10 @@ from typing import Callable, Iterable, List, Optional
 from torchvision import transforms
 
 from .base import DatasetConfig, TransformSpec, transform_specs
+from .rkmv1_preprocess import (
+    build_rkmv1_train_transform,
+    build_rkmv1_val_transform,
+)
 
 
 def _instantiate(spec: TransformSpec) -> Callable:
@@ -35,6 +39,9 @@ def _ensure_normalize(ops: List[Callable], mean, std) -> List[Callable]:
 def build_train_transforms(cfg: DatasetConfig, sns_augment: Optional[Callable]) -> transforms.Compose:
     """학습용 변환을 구성한다."""
 
+    if (cfg.preprocess or "").lower() == "rkmv1":
+        return build_rkmv1_train_transform(cfg, sns_augment)
+
     if cfg.train.transforms:
         ops = [_instantiate(spec) for spec in cfg.train.transforms]
     else:
@@ -57,6 +64,9 @@ def build_train_transforms(cfg: DatasetConfig, sns_augment: Optional[Callable]) 
 def build_val_transforms(cfg: DatasetConfig) -> transforms.Compose:
     """검증용 변환을 구성한다."""
 
+    if (cfg.preprocess or "").lower() == "rkmv1":
+        return build_rkmv1_val_transform(cfg)
+
     if cfg.val and cfg.val.transforms:
         ops = [_instantiate(spec) for spec in cfg.val.transforms]
     else:
@@ -72,4 +82,3 @@ def build_val_transforms(cfg: DatasetConfig) -> transforms.Compose:
     )
     ops = _ensure_normalize(ops, cfg.normalization.mean, cfg.normalization.std)
     return transforms.Compose(ops)
-

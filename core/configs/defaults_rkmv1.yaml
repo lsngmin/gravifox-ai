@@ -1,0 +1,30 @@
+defaults:
+  - experiment: default
+  - logging: default
+  - augment: sns_standard
+  - model: rkmv1
+  - dataset: rkmv1
+  - trainer: rkmv1
+  - optimizer: adamw
+  - scheduler: cosine
+  - _self_
+
+run:
+  seed: 2001
+  output_dir: ${oc.env:TVB_EXPERIMENT_ROOT,${hydra:runtime.cwd}/experiments}/${model.name}/${now:%Y%m%d_%H%M%S}
+
+resume: null
+
+experiment_name: ${model.name}
+
+inference:
+  multiscale:
+    - 512
+  cell_sizes:
+    - 512
+  n_patches: 3
+  max_patches: 3
+  aggregate: mean
+  uncertain_band:
+    - 0.45
+    - 0.55

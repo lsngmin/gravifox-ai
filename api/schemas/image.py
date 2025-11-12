@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from typing import List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class ImagePredictionResponse(BaseModel):
+class ApiSchema(BaseModel):
+    """FastAPI 스키마 공통 베이스."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+
+class ImagePredictionResponse(ApiSchema):
     """이미지 추론 응답."""
 
     timestamp: float = Field(..., description="예측이 생성된 UNIX 타임스탬프")
@@ -21,13 +27,13 @@ class ImagePredictionResponse(BaseModel):
     probabilities: List[float] = Field(..., description="클래스별 확률 분포")
 
 
-class UploadResponse(BaseModel):
+class UploadResponse(ApiSchema):
     """업로드 식별자를 담는 응답."""
 
     uploadId: str = Field(..., description="저장된 업로드 식별자")
 
 
-class ModelItem(BaseModel):
+class ModelItem(ApiSchema):
     """모델 카탈로그 항목."""
 
     key: str
@@ -40,7 +46,7 @@ class ModelItem(BaseModel):
     labels: List[str]
 
 
-class ModelListResponse(BaseModel):
+class ModelListResponse(ApiSchema):
     """모델 목록 응답."""
 
     defaultKey: str

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import torch
 from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
@@ -19,6 +19,30 @@ logger = get_logger(__name__)
 
 # 손상된 이미지로 인해 학습이 중단되지 않도록 검증 단계에서 빠르게 걸러낸다.
 ImageFile.LOAD_TRUNCATED_IMAGES = False
+
+
+def _configure_truncated_policy(strict_decode: bool) -> None:
+    """PIL에서 잘린 이미지를 허용할지 여부를 설정한다."""
+
+    ImageFile.LOAD_TRUNCATED_IMAGES = not strict_decode
+
+
+def _build_image_loader(image_size: int, *, strict_decode: bool) -> Callable[[str], Image.Image]:
+    """ImageFolder에서 사용할 안전한 로더를 생성한다."""
+
+    fallback = Image.new("RGB", (image_size, image_size))
+
+    def _loader(path: str) -> Image.Image:
+        try:
+            with Image.open(path) as image:
+                return image.convert("RGB")
+        except (OSError, UnidentifiedImageError, Image.DecompressionBombError, ValueError) as exc:
+            if strict_decode:
+                raise
+            logger.warning("손상된 이미지를 더미 이미지로 대체합니다 - path=%s reason=%s", path, exc)
+            return fallback.copy()
+
+    return _loader
 
 
 def _filter_corrupted_samples(dataset: datasets.ImageFolder, *, source_name: str, split: str) -> None:
@@ -297,6 +321,8 @@ def _build_split_dataset(
     *,
     split: str,
     replicate: bool,
+    skip_corrupt_check: bool,
+    loader_fn: Callable[[str], Image.Image],
 ) -> Tuple[Optional[Dataset], List[str]]:
     """여러 소스를 결합한 Dataset과 클래스 이름을 생성한다."""
 
@@ -307,8 +333,12 @@ def _build_split_dataset(
         if not root.exists():
             logger.warning("소스 %s의 %s 경로가 존재하지 않아 건너뜁니다: %s", source_name, split, root)
             continue
-        base_dataset = datasets.ImageFolder(root, transform=transform)
-        _filter_corrupted_samples(base_dataset, source_name=source_name, split=split)
+        logger.info("데이터 소스 로드 - source=%s split=%s path=%s", source_name, split, root)
+        base_dataset = datasets.ImageFolder(root, transform=transform, loader=loader_fn)
+        if skip_corrupt_check:
+            logger.info("손상 이미지 검사를 건너뜁니다 - source=%s split=%s", source_name, split)
+        else:
+            _filter_corrupted_samples(base_dataset, source_name=source_name, split=split)
         limited = _apply_limit(base_dataset, limit)
         if not class_names:
             class_names = list(getattr(base_dataset, "classes", []))
@@ -362,15 +392,21 @@ def build_dataloaders(
         std=std,
         is_train=False,
     )
+    skip_corrupt_check = bool(getattr(dataset_cfg.loader, "skip_corrupt_check", False))
+    strict_decode = not skip_corrupt_check
+    _configure_truncated_policy(strict_decode)
+    loader_fn = _build_image_loader(dataset_cfg.image_size, strict_decode=strict_decode)
 
     if build_train:
         train_dataset, class_names = _build_split_dataset(
             dataset_cfg,
             dataset_cfg.train,
             train_transform,
-            dataset_cfg.train.limit,
+            getattr(dataset_cfg.train, "limit", None),
             split="train",
             replicate=True,
+            skip_corrupt_check=skip_corrupt_check,
+            loader_fn=loader_fn,
         )
         if train_dataset is not None:
             _warn_if_uneven_length(train_dataset, split="train", world_size=world_size)
@@ -399,9 +435,11 @@ def build_dataloaders(
             dataset_cfg,
             dataset_cfg.val,
             val_transform,
-            dataset_cfg.val.limit,
+            getattr(dataset_cfg.val, "limit", None),
             split="val",
             replicate=False,
+            skip_corrupt_check=skip_corrupt_check,
+            loader_fn=loader_fn,
         )
         if val_dataset is not None:
             _warn_if_uneven_length(val_dataset, split="val", world_size=world_size)

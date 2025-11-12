@@ -39,7 +39,7 @@ logger = logging.getLogger("tvb.upload")
 @router.post("/predict/image", response_model=ImagePredictionResponse)
 async def predict_image(
     file: UploadFile = File(...),
-    model_key: Optional[str] = Form(default=None, alias="modelKey"),
+    selected_model_key: Optional[str] = Form(default=None, alias="modelKey"),
     vit_service: VitInferenceService = Depends(get_vit_service),
     calibrator: AdaptiveThresholdCalibrator = Depends(get_calibrator),
 ) -> ImagePredictionResponse:
@@ -60,10 +60,12 @@ async def predict_image(
         raise HTTPException(status_code=400, detail="invalid image file") from exc
     start = time.perf_counter()
     try:
-        probs = await vit_service.predict_image(image, model_key=model_key)
+        probs = await vit_service.predict_image(
+            image, model_key=selected_model_key
+        )
     finally:
         image.close()
-    pipeline = await vit_service.get_pipeline(model_key=model_key)
+    pipeline = await vit_service.get_pipeline(model_key=selected_model_key)
     calibration = calibrator.calibrate(probs, pipeline.real_index)
     latency_ms = (time.perf_counter() - start) * 1000.0
     model_version = (

@@ -14,6 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 from core.datasets import build_dataloaders
 from core.models.registry import get_model
 from core.trainer.engine import TrainCfg, Trainer
+from core.trainer.rkmv1_engine import RKMv1Trainer
 from core.trainer.experiment_manager import ExperimentManager, MonitorConfig
 from core.utils.logger import get_logger, setup_experiment_loggers
 from core.utils.seed import set_seed
@@ -223,7 +224,8 @@ def r(c: DictConfig) -> Path:
         is_main_process=accelerator.is_main_process,
     )
 
-    trainer = Trainer(
+    trainer_cls = RKMv1Trainer if str(cfg.model.name).lower() == "rkmv1" else Trainer
+    trainer = trainer_cls(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,

@@ -1,6 +1,103 @@
 {
-  "defaultKey": "vit_residual_fusion",
+  "defaultKey": "vit_residual_face_focus",
   "items": [
+    {
+      "key": "vit_residual_face_focus",
+      "name": "Altair-0.1-beta · FaceFocus",
+      "version": "2025-10",
+      "description": "ViT-B/16 residual fusion tuned with 얼굴 패치 우선 순위 및 고주파 강조.",
+      "type": "torch_image",
+      "path": "/home/smin/tvb/tvb-ai/api/models/v1.pt",
+      "threshold": 0.56,
+      "input": "image",
+      "labels": [
+        "REAL",
+        "FAKE"
+      ],
+      "extras": {
+        "baseModelKey": "vit_residual_fusion",
+        "pipeline": {
+          "multipatch": true,
+          "aggregate": "mean"
+        },
+        "preprocessProfile": "face_focus",
+        "preprocessOverrides": {
+          "dataset": {
+            "name": "vit_face_focus",
+            "image_size": 320,
+            "augment": {
+              "face_crop": {
+                "detector": "retinaface",
+                "margin": 0.18,
+                "min_score": 0.6,
+                "max_faces": 1
+              },
+              "highpass_gain": 1.35,
+              "gamma": 0.95
+            },
+            "loader": {
+              "batch_size": 1,
+              "num_workers": 2,
+              "pin_memory": true,
+              "persistent_workers": false,
+              "drop_last": false,
+              "precompute_patches": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "key": "vit_residual_background_sweeper",
+      "name": "Altair-0.1-beta · BackgroundSweeper",
+      "version": "2025-10",
+      "description": "ViT-B/16 residual fusion with 배경 텍스처 증폭 및 와이드 패치 스윕.",
+      "type": "torch_image",
+      "path": "/home/smin/tvb/tvb-ai/api/models/v1.pt",
+      "threshold": 0.54,
+      "input": "image",
+      "labels": [
+        "REAL",
+        "FAKE"
+      ],
+      "extras": {
+        "baseModelKey": "vit_residual_fusion",
+        "pipeline": {
+          "multipatch": true,
+          "aggregate": "topk_mean",
+          "topk": 0.4
+        },
+        "preprocessProfile": "background_sweeper",
+        "preprocessOverrides": {
+          "dataset": {
+            "name": "vit_background_sweeper",
+            "image_size": 384,
+            "augment": {
+              "background_enhance": {
+                "mode": "wavelet",
+                "blend": 0.35
+              },
+              "random_grid_crop": {
+                "grid": [
+                  2,
+                  3
+                ],
+                "min_keep": 0.7
+              },
+              "shadow_compensation": true
+            },
+            "loader": {
+              "batch_size": 1,
+              "num_workers": 2,
+              "pin_memory": true,
+              "persistent_workers": false,
+              "drop_last": false,
+              "precompute_patches": true
+            }
+          }
+        }
+      }
+    },
     {
       "key": "vit_residual_fusion",
       "name": "Altair-0.1-beta",
@@ -15,8 +112,11 @@
         "FAKE"
       ],
       "extras": {
-        "multipatch": true,
-        "aggregate": "mean"
+        "pipeline": {
+          "multipatch": true,
+          "aggregate": "mean"
+        },
+        "preprocessProfile": "standard"
       }
     },
     {
@@ -31,7 +131,10 @@
       "labels": [
         "REAL",
         "FAKE"
-      ]
+      ],
+      "extras": {
+        "preprocessProfile": "standard"
+      }
     }
   ]
 }
