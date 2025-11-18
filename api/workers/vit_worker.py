@@ -15,6 +15,7 @@ from api.config import get_settings
 from api.services.calibration import AdaptiveThresholdCalibrator
 from api.services.inference import VitInferenceService
 from api.services.mq import MQService, publish_failed, publish_progress, publish_result
+from api.services.storage import MediaStorageService
 
 LOGGER = get_logger("api.workers.vit_worker")
 
@@ -59,12 +60,14 @@ async def run_analysis(
             model_key_candidate = candidate
 
     await service.ensure_ready(model_key_candidate)
-    media_path = Path(settings_obj.file_store_root) / upload_id
+    media_root = Path(settings_obj.file_store_root)
+    media_path = media_root / upload_id
     if not media_path.is_file():
         await publish_failed(
             mq, job_id, f"upload not found: {upload_id}", reason_code="FILE_NOT_FOUND"
         )
         return
+    upload_meta = MediaStorageService.read_metadata(media_root, upload_id)
     start = time.perf_counter()
     try:
         with Image.open(media_path) as image:
@@ -146,6 +149,7 @@ async def run_analysis(
             },
             "params": params_dict,
             "model": model_payload,
+            "media": _build_media_payload(upload_id, upload_meta, media_path),
         }
         if heatmap_score is not None:
             result_payload["heatmap_score"] = heatmap_score
@@ -236,6 +240,24 @@ def _resolve_heatmap_score(heatmap: Optional[Dict[str, Any]]) -> Optional[float]
     if best > 1.0:
         return 1.0
     return best
+
+
+def _build_media_payload(
+    upload_id: str,
+    stored_meta: Optional[Dict[str, Any]],
+    media_path: Path,
+) -> Dict[str, Any]:
+    """결과 payload에 포함될 미디어 메타를 구성한다."""
+
+    if stored_meta:
+        payload = dict(stored_meta)
+        payload.setdefault("uploadId", upload_id)
+        return payload
+    return {
+        "uploadId": upload_id,
+        "storage": "local",
+        "path": str(media_path),
+    }
 
 
 __all__ = ["run_analysis"]

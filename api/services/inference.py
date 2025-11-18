@@ -36,6 +36,8 @@ from api.services.registry import ModelInfo, ModelRegistryService
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_RKMV1_DEFAULT_SCALE = 512
+_RKMV1_DEFAULT_PATCHES = 3
 
 
 @dataclass
@@ -52,6 +54,7 @@ class VitPipeline:
     run_dir: Path
     checkpoint_path: Path
     model_name: str
+    is_rkmv1: bool
     inference_mode: str
     inference_scales: Tuple[int, ...]
     inference_n_patches: int
@@ -90,7 +93,32 @@ class VitInferenceService:
     async def startup(self, model_key: Optional[str] = None) -> None:
         """FastAPI 애플리케이션 시작 시 기본 파이프라인을 준비한다."""
 
-        await self.ensure_ready(model_key)
+        if model_key:
+            await self.ensure_ready(model_key)
+            return
+
+        try:
+            default_model = self._registry.get_default_model()
+        except Exception:
+            self._logger.exception("기본 모델 정보를 불러오지 못했습니다")
+            raise
+
+        preload_keys: List[str] = [default_model.key]
+        try:
+            for model in self._registry.list_models():
+                if model.key not in preload_keys:
+                    preload_keys.append(model.key)
+        except Exception:
+            self._logger.exception("모델 카탈로그 조회에 실패했습니다")
+            raise
+
+        for key in preload_keys:
+            try:
+                await self.ensure_ready(key)
+            except Exception:
+                if key == default_model.key:
+                    raise
+                self._logger.exception("모델 초기화 실패 - key=%s", key)
 
     async def shutdown(self) -> None:
         """FastAPI 종료 시 자원을 정리한다."""
@@ -134,6 +162,7 @@ class VitInferenceService:
             "max_patches": pipeline.inference_max_patches,
             "uncertainty_band": list(pipeline.uncertainty_band),
             "model_key": pipeline.model_key,
+            "is_rkmv1": pipeline.is_rkmv1,
         }
 
         rgb_image = image if image.mode == "RGB" else image.convert("RGB")
@@ -326,7 +355,10 @@ class VitInferenceService:
         real_index = self._resolve_real_index(class_names)
         model_cfg = meta.get("model") or {}
         model_name = str(model_cfg.get("name") or model_info.name or model_info.key)
-        inference_cfg = self._resolve_inference_config(meta, model_info)
+        is_rkmv1 = self._is_rkmv1_model(model, meta, model_info)
+        inference_cfg = self._resolve_inference_config(
+            meta, model_info, is_rkmv1=is_rkmv1
+        )
         return VitPipeline(
             model_key=model_info.key,
             model_info=model_info,
@@ -338,6 +370,7 @@ class VitInferenceService:
             run_dir=run_dir,
             checkpoint_path=checkpoint_path,
             model_name=model_name,
+            is_rkmv1=is_rkmv1,
             **inference_cfg,
         )
 
@@ -485,6 +518,29 @@ class VitInferenceService:
         model.to(device)
         model.eval()
         return model
+
+    def _is_rkmv1_model(
+        self,
+        model: torch.nn.Module,
+        meta: dict[str, Any],
+        model_info: ModelInfo,
+    ) -> bool:
+        """로딩된 모델이 RKMv1 계열인지 판정한다."""
+
+        version = str(getattr(model, "model_version", "")).lower()
+        if "rkmv1" in version or version.startswith("rkm"):
+            return True
+        cls_name = model.__class__.__name__.lower()
+        if "rkmv1" in cls_name or cls_name.startswith("rkm"):
+            return True
+        meta_name = str(meta.get("model", {}).get("name") or "").lower()
+        if "rkmv1" in meta_name or meta_name.startswith("rkm"):
+            return True
+        info_candidates = [
+            str(model_info.key or "").lower(),
+            str(model_info.name or "").lower(),
+        ]
+        return any(candidate.startswith("rkm") for candidate in info_candidates if candidate)
 
     def _resolve_model_paths(self, model_info: ModelInfo) -> Tuple[Path, Path, Path]:
         """모델 실행에 필요한 디렉터리와 파일 경로를 결정한다."""
@@ -646,7 +702,11 @@ class VitInferenceService:
         return ["REAL", "FAKE"]
 
     def _resolve_inference_config(
-        self, meta: dict[str, Any], model_info: ModelInfo
+        self,
+        meta: dict[str, Any],
+        model_info: ModelInfo,
+        *,
+        is_rkmv1: bool = False,
     ) -> Dict[str, Any]:
         """멀티패치/멀티스케일 추론 설정을 계산한다."""
 
@@ -745,6 +805,15 @@ class VitInferenceService:
             float(self._settings.uncertainty_band_low),
             float(self._settings.uncertainty_band_high),
         )
+
+        if is_rkmv1:
+            scales = (_RKMV1_DEFAULT_SCALE,)
+            cell_sizes = tuple([_RKMV1_DEFAULT_SCALE] * len(scales))
+            n_patches = max(n_patches, _RKMV1_DEFAULT_PATCHES)
+            max_candidate = max(n_patches, _RKMV1_DEFAULT_PATCHES)
+            if max_patches_value is None or max_patches_value < max_candidate:
+                max_patches_value = max_candidate
+            mode = "multi"
 
         return {
             "inference_mode": mode,

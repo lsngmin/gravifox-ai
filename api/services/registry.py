@@ -19,6 +19,7 @@ class ModelInfo:
     name: str
     version: Optional[str]
     description: Optional[str]
+    descriptions: Dict[str, str] = field(default_factory=dict)
     type: str
     path: str
     threshold: float = 0.5
@@ -175,6 +176,7 @@ class ModelRegistryService:
             labels_tuple = tuple(str(x) for x in labels_raw)
         else:
             labels_tuple = ()
+        # Extract extras while excluding known fields
         extras = {
             k: v
             for k, v in item.items()
@@ -184,6 +186,7 @@ class ModelRegistryService:
                 "name",
                 "version",
                 "description",
+                "descriptions",
                 "type",
                 "path",
                 "threshold",
@@ -192,11 +195,28 @@ class ModelRegistryService:
             }
         }
         catalog_dir = self._catalog_path().parent
+        # Normalize descriptions map (if provided)
+        descriptions_raw = item.get("descriptions")
+        descriptions: Dict[str, str] = {}
+        if isinstance(descriptions_raw, dict):
+            for lang, text in descriptions_raw.items():
+                try:
+                    lang_key = str(lang).strip()
+                    if not lang_key:
+                        continue
+                    if text is None:
+                        continue
+                    text_val = str(text).strip()
+                    if text_val:
+                        descriptions[lang_key] = text_val
+                except Exception:
+                    continue
         return ModelInfo(
             key=key,
             name=str(item.get("name") or key),
             version=item.get("version"),
             description=item.get("description"),
+            descriptions=descriptions,
             type=str(item.get("type") or "torch_image"),
             path=path,
             threshold=float(item.get("threshold", 0.5)),

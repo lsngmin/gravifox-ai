@@ -46,7 +46,10 @@ async def on_startup() -> None:
 
     settings = get_runtime_settings()
     storage = get_storage_service()
-    asyncio.create_task(storage.run_cleanup_loop())
+    if storage.cleanup_enabled:
+        asyncio.create_task(storage.run_cleanup_loop())
+    else:
+        LOGGER.info("업로드 파일 정리가 비활성화되어 백그라운드 작업을 건너뜁니다")
     vit_service = get_vit_service()
     await vit_service.startup()
     if settings.enable_mq and settings.rabbitmq_url:

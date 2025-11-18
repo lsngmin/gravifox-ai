@@ -52,4 +52,5 @@ from . import residual  # noqa: E402,F401
 from . import multipatch  # noqa: E402,F401
 from . import vit_residual  # noqa: E402,F401
 from . import fusion_head  # noqa: E402,F401
+from .backbones import siglip  # noqa: E402,F401
 from . import rkmv1  # noqa: E402,F401

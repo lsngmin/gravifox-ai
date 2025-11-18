@@ -60,6 +60,7 @@ class RuntimeSettings(BaseSettings):
         max_image_mb: 이미지 업로드 최대 크기(MB).
         max_video_mb: 동영상 업로드 최대 크기(MB).
         file_ttl_hours: 업로드 파일 보존 시간(시간 단위).
+        file_cleanup_enabled: TTL 기반 파일 정리 기능 사용 여부.
         vit_run_dir: 특정 실험 경로를 직접 지정할 때 사용하는 절대 경로.
         vit_run_root: 실험 디렉터리의 기본 루트 경로.
         vit_checkpoint_name: 사용할 체크포인트 파일명.
@@ -99,6 +100,17 @@ class RuntimeSettings(BaseSettings):
     max_image_mb: float = Field(default=5.0, env="MAX_IMAGE_MB")
     max_video_mb: float = Field(default=50.0, env="MAX_VIDEO_MB")
     file_ttl_hours: float = Field(default=24.0, env="FILE_TTL_HOURS")
+    file_cleanup_enabled: bool = Field(
+        default=False, env="FILE_CLEANUP_ENABLED"
+    )
+    upload_s3_bucket: Optional[str] = Field(default=None, env="UPLOAD_S3_BUCKET")
+    upload_s3_region: Optional[str] = Field(default=None, env="UPLOAD_S3_REGION")
+    upload_s3_prefix: Optional[str] = Field(default="", env="UPLOAD_S3_PREFIX")
+    upload_s3_endpoint: Optional[str] = Field(default=None, env="UPLOAD_S3_ENDPOINT")
+    upload_s3_base_url: Optional[str] = Field(default=None, env="UPLOAD_S3_BASE_URL")
+    upload_s3_force_path_style: bool = Field(
+        default=False, env="UPLOAD_S3_FORCE_PATH_STYLE"
+    )
 
     vit_run_dir: Optional[Path] = Field(default=None, env="TVB_VIT_RUN_DIR")
     vit_run_root: Path = Field(default=_DEFAULT_RUN_ROOT, env="TVB_VIT_RUN_ROOT")

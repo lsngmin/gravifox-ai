@@ -135,6 +135,35 @@
       "extras": {
         "preprocessProfile": "standard"
       }
+    },
+    {
+      "key": "rkmv1",
+      "name": "Altair-RKMv1",
+      "version": "2025-11",
+      "description": "SigLIP 기반 RKMv1 융합 백본으로 SNS 업로드 손실에 강한 판별기.",
+      "type": "torch_image",
+      "path": "rkmv1.pt",
+      "threshold": 0.53,
+      "input": "image",
+      "labels": [
+        "REAL",
+        "FAKE"
+      ],
+      "extras": {
+        "family": "rkmv1",
+        "preprocessProfile": "rkmv1",
+        "inference": {
+          "multiscale": [
+            512
+          ],
+          "cell_sizes": [
+            512
+          ],
+          "n_patches": 3,
+          "max_patches": 3,
+          "aggregate": "mean"
+        }
+      }
     }
   ]
 }

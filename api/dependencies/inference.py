@@ -9,6 +9,7 @@ from api.services.calibration import AdaptiveThresholdCalibrator
 from api.services.inference import VitInferenceService
 from api.services.mq import MQService
 from api.services.registry import ModelRegistryService
+from api.services.object_storage import ObjectStorageClient
 from api.services.storage import MediaStorageService
 from api.services.upload_token import (
     UploadTokenRegistryClient,
@@ -83,6 +84,19 @@ def get_calibrator() -> AdaptiveThresholdCalibrator:
 
 
 @lru_cache(maxsize=1)
+def _object_storage_singleton() -> ObjectStorageClient:
+    """S3 호환 객체 스토리지 클라이언트 싱글톤."""
+
+    return ObjectStorageClient(get_runtime_settings())
+
+
+def get_object_storage() -> ObjectStorageClient:
+    """FastAPI 라우트용 객체 스토리지 의존성."""
+
+    return _object_storage_singleton()
+
+
+@lru_cache(maxsize=1)
 def _storage_service_singleton() -> MediaStorageService:
     """미디어 저장 서비스 싱글톤.
 
@@ -90,7 +104,10 @@ def _storage_service_singleton() -> MediaStorageService:
         미디어 저장 서비스 인스턴스.
     """
 
-    return MediaStorageService(get_runtime_settings())
+    return MediaStorageService(
+        get_runtime_settings(),
+        object_storage=_object_storage_singleton(),
+    )
 
 
 def get_storage_service() -> MediaStorageService:
@@ -175,6 +192,7 @@ __all__ = [
     "get_runtime_settings",
     "get_vit_service",
     "get_storage_service",
+    "get_object_storage",
     "get_model_registry",
     "get_mq_service",
     "get_calibrator",
