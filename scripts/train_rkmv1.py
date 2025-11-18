@@ -159,7 +159,7 @@ def _build_model(cfg: DictConfig) -> torch.nn.Module:
 
 def _train(cfg: DictConfig) -> Path:
     _configure_device()
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
     accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
     _init_distributed(accelerator)
     _maybe_reduce_logging(accelerator)

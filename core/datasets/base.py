@@ -75,6 +75,7 @@ class DatasetConfig:
     source: str = ""
     sources: List[str] = field(default_factory=list)
     source_weights: Dict[str, float] = field(default_factory=dict)
+    domain_map: Dict[str, int] = field(default_factory=dict)
     augment: Optional[Dict[str, Any]] = None
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
     loader: LoaderConfig = field(default_factory=LoaderConfig)
@@ -175,6 +176,7 @@ def load_dataset_config(cfg: DatasetConfig | Mapping[str, Any]) -> DatasetConfig
         source=str(config_dict.get("source", "")),
         sources=list(config_dict.get("sources", [])),
         source_weights=dict(config_dict.get("source_weights", {})),
+        domain_map={str(k): int(v) for k, v in (config_dict.get("domain_map") or {}).items()},
         augment=augment,
         normalization=normalization,
         loader=loader,

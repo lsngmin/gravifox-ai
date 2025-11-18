@@ -95,7 +95,8 @@ class ResidualHybridBranch(nn.Module):
     def _spectral_features(self, x: torch.Tensor) -> torch.Tensor:
         """FFT 기반 스펙트럼 특징을 계산한다."""
 
-        freq = torch.fft.rfft2(x, norm="ortho")
+        spec_input = x if x.dtype == torch.float32 else x.to(torch.float32)
+        freq = torch.fft.rfft2(spec_input, norm="ortho")
         magnitude = torch.abs(freq)
         magnitude = torch.nan_to_num(magnitude, nan=0.0, posinf=1.0e4, neginf=0.0)
         pooled = self.spectral_pool(magnitude)

@@ -20,6 +20,15 @@ source_weights:
   imagenet_ai_0508_adm: 1.0
   imagenet_glide: 1.0
   imagenet_midjourney: 1.0
+domain_map:
+  imagenet_ai_0419_biggan: 0
+  imagenet_ai_0419_sdv4: 1
+  imagenet_ai_0419_vqdm: 2
+  imagenet_ai_0424_sdv5: 3
+  imagenet_ai_0424_wukong: 4
+  imagenet_ai_0508_adm: 5
+  imagenet_glide: 6
+  imagenet_midjourney: 7
 image_size: 512
 preprocess: rkmv1
 

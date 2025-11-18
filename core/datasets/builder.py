@@ -21,6 +21,24 @@ logger = get_logger(__name__)
 ImageFile.LOAD_TRUNCATED_IMAGES = False
 
 
+class DomainAnnotatedDataset(Dataset):
+    """ImageFolder 샘플에 도메인 라벨을 추가로 부착하는 래퍼."""
+
+    def __init__(self, base_dataset: Dataset, domain_id: int):
+        self.base_dataset = base_dataset
+        self.domain_id = int(domain_id)
+
+    def __len__(self) -> int:
+        return len(self.base_dataset)
+
+    def __getitem__(self, index: int):
+        sample = self.base_dataset[index]
+        if isinstance(sample, tuple) and len(sample) == 2:
+            image, label = sample
+            return image, label, self.domain_id
+        raise TypeError("DomainAnnotatedDataset는 (image, label) 튜플 샘플만 지원합니다.")
+
+
 def _configure_truncated_policy(strict_decode: bool) -> None:
     """PIL에서 잘린 이미지를 허용할지 여부를 설정한다."""
 
@@ -43,6 +61,21 @@ def _build_image_loader(image_size: int, *, strict_decode: bool) -> Callable[[st
             return fallback.copy()
 
     return _loader
+
+def _resolve_domain_id(
+    source_name: str,
+    *,
+    domain_lookup: Dict[str, int],
+    next_id_state: Dict[str, int],
+) -> int:
+    """소스 이름에 해당하는 도메인 ID를 결정한다."""
+
+    if source_name in domain_lookup:
+        return int(domain_lookup[source_name])
+    next_id = next_id_state.setdefault("value", max(domain_lookup.values(), default=-1) + 1)
+    domain_lookup[source_name] = next_id
+    next_id_state["value"] = next_id + 1
+    return next_id
 
 
 def _filter_corrupted_samples(dataset: datasets.ImageFolder, *, source_name: str, split: str) -> None:
@@ -323,6 +356,8 @@ def _build_split_dataset(
     replicate: bool,
     skip_corrupt_check: bool,
     loader_fn: Callable[[str], Image.Image],
+    domain_lookup: Dict[str, int],
+    next_domain_state: Dict[str, int],
 ) -> Tuple[Optional[Dataset], List[str]]:
     """여러 소스를 결합한 Dataset과 클래스 이름을 생성한다."""
 
@@ -340,9 +375,16 @@ def _build_split_dataset(
         else:
             _filter_corrupted_samples(base_dataset, source_name=source_name, split=split)
         limited = _apply_limit(base_dataset, limit)
+        domain_id = _resolve_domain_id(
+            source_name,
+            domain_lookup=domain_lookup,
+            next_id_state=next_domain_state,
+        )
+        annotated = DomainAnnotatedDataset(limited, domain_id)
         if not class_names:
             class_names = list(getattr(base_dataset, "classes", []))
-        datasets_with_weights.append((limited, weight))
+        logger.debug("도메인 라벨 부여 - source=%s domain_id=%d", source_name, domain_id)
+        datasets_with_weights.append((annotated, weight))
 
     if not datasets_with_weights:
         return None, class_names
@@ -397,6 +439,9 @@ def build_dataloaders(
     _configure_truncated_policy(strict_decode)
     loader_fn = _build_image_loader(dataset_cfg.image_size, strict_decode=strict_decode)
 
+    domain_lookup = dict(dataset_cfg.domain_map)
+    next_domain_state: Dict[str, int] = {}
+
     if build_train:
         train_dataset, class_names = _build_split_dataset(
             dataset_cfg,
@@ -407,6 +452,8 @@ def build_dataloaders(
             replicate=True,
             skip_corrupt_check=skip_corrupt_check,
             loader_fn=loader_fn,
+            domain_lookup=domain_lookup,
+            next_domain_state=next_domain_state,
         )
         if train_dataset is not None:
             _warn_if_uneven_length(train_dataset, split="train", world_size=world_size)
@@ -440,6 +487,8 @@ def build_dataloaders(
             replicate=False,
             skip_corrupt_check=skip_corrupt_check,
             loader_fn=loader_fn,
+            domain_lookup=domain_lookup,
+            next_domain_state=next_domain_state,
         )
         if val_dataset is not None:
             _warn_if_uneven_length(val_dataset, split="val", world_size=world_size)
@@ -461,5 +510,9 @@ def build_dataloaders(
 
     if not class_names:
         class_names = []
+
+    if domain_lookup:
+        unique_domains = sorted({int(v) for v in domain_lookup.values()})
+        logger.info("도메인 라벨 %d개 감지: %s", len(unique_domains), domain_lookup)
 
     return train_loader, val_loader, class_names, val_transform, train_transform

@@ -33,5 +33,5 @@ loss:
   triplet_weight: 0.2
   domain_weight: 0.1
   triplet_margin: 0.2
-  domain_classes: 2
+  domain_classes: 8
   domain_grl_lambda: 1.0
