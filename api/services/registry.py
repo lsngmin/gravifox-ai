@@ -19,12 +19,12 @@ class ModelInfo:
     name: str
     version: Optional[str]
     description: Optional[str]
-    descriptions: Dict[str, str] = field(default_factory=dict)
     type: str
     path: str
     threshold: float = 0.5
     input: str = "image"
     labels: Tuple[str, ...] = ()
+    descriptions: Dict[str, str] = field(default_factory=dict)
     extras: Dict[str, object] = field(default_factory=dict)
     catalog_dir: Path = field(default=Path("."), repr=False)
 
