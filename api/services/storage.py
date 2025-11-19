@@ -116,7 +116,7 @@ class MediaStorageService:
         except HTTPException:
             raise
         except Exception as exc:  # pragma: no cover - 파일 시스템 오류 대응
-                destination.unlink(missing_ok=True)
+            destination.unlink(missing_ok=True)
             self._logger.error("파일 저장 실패: %s", exc)
             raise HTTPException(status_code=500, detail="upload failed") from exc
 
